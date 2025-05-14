@@ -1,0 +1,137 @@
+import { CfnOutput, Stack, StackProps } from 'aws-cdk-lib';
+import { Distribution } from 'aws-cdk-lib/aws-cloudfront';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import { Construct } from 'constructs';
+import * as path from 'path';
+import { StaticSite } from './constructs/static-site';
+import { SourceBucket } from './constructs/source-bucket';
+
+export interface StaticSitesStackProps extends StackProps {
+  readonly apiUrl: string;
+  readonly controlPlaneUrl: string;
+  readonly usingKubeCost: boolean;
+  readonly clientId?: string;
+  readonly authorizationServer?: string;
+  readonly wellKnownEndpointUrl?: string;
+  readonly customBaseDomain?: string;
+  readonly hostedZoneId?: string;
+  readonly clusterConfigs: {
+    applicationServices: {
+      name: string;
+      services: string[];
+    };
+    helmServices: {
+      name: string;
+      services: string[];
+    };
+  };
+}
+
+export class StaticSitesStack extends Stack {
+  readonly applicationSiteDistribution: Distribution;
+  readonly helmSiteDistribution: Distribution;
+
+  constructor(scope: Construct, id: string, props: StaticSitesStackProps) {
+    super(scope, id, props);
+
+    const useCustomDomain = props.customBaseDomain ? true : false;
+    if (useCustomDomain && !props.hostedZoneId) {
+      throw new Error(
+        'HostedZoneId must be specified when using a custom domain for static sites.'
+      );
+    }
+
+    const hostedZone = useCustomDomain
+      ? route53.PublicHostedZone.fromHostedZoneAttributes(this, 'PublicHostedZone', {
+          hostedZoneId: props.hostedZoneId!,
+          zoneName: props.customBaseDomain!,
+        })
+      : undefined;
+
+    const sourceBucket = new SourceBucket(this, 'static-sites-source', {
+      name: 'static-sites-source',
+      assetDirectory: path.join(path.dirname(__filename), '..', 'clients'),
+      excludes: ['node_modules', '.vscode', 'dist', '.angular'],
+    });
+
+    // Admin site (shared between both clusters)
+    const adminSite = new StaticSite(this, 'AdminSite', {
+      name: 'AdminSite',
+      sourceBucket,
+      project: 'Admin',
+      assetDirectory: path.join(path.dirname(__filename), '..', 'clients'),
+      allowedMethods: ['GET', 'HEAD', 'OPTIONS'],
+      siteConfigurationGenerator: (siteDomain) => ({
+        apiUrl: props.controlPlaneUrl,
+        authServer: props.authorizationServer!,
+        clientId: props.clientId!,
+        domain: siteDomain,
+        kubecostUI: props.usingKubeCost ? `${props.apiUrl}/kubecost` : '',
+        production: true,
+        usingCustomDomain: useCustomDomain,
+        usingKubeCost: props.usingKubeCost,
+        wellKnownEndpointUrl: props.wellKnownEndpointUrl!,
+        clusterConfigs: props.clusterConfigs, // Pass cluster configs to admin site
+      }),
+      customDomain: useCustomDomain ? `admin.${props.customBaseDomain!}` : undefined,
+      hostedZone: hostedZone,
+    });
+    new CfnOutput(this, `AdminSiteUrl`, {
+      value: `https://${adminSite.siteDomain}`,
+    });
+
+    // Application Services site
+    const applicationSite = new StaticSite(this, 'ApplicationServicesSite', {
+      name: 'ApplicationServicesSite',
+      sourceBucket,
+      project: 'Application',
+      assetDirectory: path.join(path.dirname(__filename), '..', 'clients'),
+      allowedMethods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
+      siteConfigurationGenerator: (siteDomain) => ({
+        production: true,
+        apiUrl: props.apiUrl,
+        controlPlaneUrl: props.controlPlaneUrl,
+        domain: siteDomain,
+        usingCustomDomain: useCustomDomain,
+        clusterName: props.clusterConfigs.applicationServices.name,
+        clusterType: 'application',
+        services: props.clusterConfigs.applicationServices.services,
+      }),
+      customDomain: useCustomDomain ? `app.${props.customBaseDomain!}` : undefined,
+      certDomain: useCustomDomain ? `*.app.${props.customBaseDomain!}` : undefined,
+      hostedZone: hostedZone,
+    });
+
+    this.applicationSiteDistribution = applicationSite.cloudfrontDistribution;
+    new CfnOutput(this, 'ApplicationServicesSiteUrl', {
+      value: `https://${applicationSite.siteDomain}`,
+    });
+
+    // Helm Services site
+    const helmSite = new StaticSite(this, 'HelmServicesSite', {
+      name: 'HelmServicesSite',
+      sourceBucket,
+      project: 'Helm',
+      assetDirectory: path.join(path.dirname(__filename), '..', 'clients'),
+      allowedMethods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
+      siteConfigurationGenerator: (siteDomain) => ({
+        production: true,
+        apiUrl: props.apiUrl,
+        controlPlaneUrl: props.controlPlaneUrl,
+        domain: siteDomain,
+        usingCustomDomain: useCustomDomain,
+        clusterName: props.clusterConfigs.helmServices.name,
+        clusterType: 'helm',
+        services: props.clusterConfigs.helmServices.services,
+      }),
+      customDomain: useCustomDomain ? `helm.${props.customBaseDomain!}` : undefined,
+      certDomain: useCustomDomain ? `*.helm.${props.customBaseDomain!}` : undefined,
+      hostedZone: hostedZone,
+    });
+
+    this.helmSiteDistribution = helmSite.cloudfrontDistribution;
+    new CfnOutput(this, 'HelmServicesSiteUrl', {
+      value: `https://${helmSite.siteDomain}`,
+    });
+  }
+}
