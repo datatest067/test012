@@ -1,0 +1,114 @@
+// ... existing code ...
+
+// Define cluster configurations
+const clusterConfigs = {
+  applicationServices: {
+    name: 'ApplicationServicesCluster',
+    services: ['application-services']
+  },
+  helmServices: {
+    name: 'HelmServicesCluster',
+    services: ['helm-services']
+  }
+};
+
+// Create clusters
+const clusters = {};
+for (const [key, config] of Object.entries(clusterConfigs)) {
+  clusters[key] = new EKSClusterStack(app, config.name, {
+    env,
+    clusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    tenantOnboardingProjectName: tenantOnboardingProjectName,
+    tenantDeletionProjectName: tenantDeletionProjectName,
+    sharedServiceAccountName: sharedServiceAccountName,
+    kubecostToken: kubecostToken,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+  });
+}
+
+// ... existing code ...
+
+// Update API Stack to use application services cluster
+const apiStack = new ApiStack(app, 'SaaSApi', {
+  env,
+  eksClusterName: clusterConfigs.applicationServices.name,
+  ingressControllerName: ingressControllerName,
+  internalNLBDomain: clusters.applicationServices.nlbDomain,
+  vpc: clusters.applicationServices.vpc,
+  customDomain: customDomain,
+  hostedZoneId: hostedZoneId,
+});
+
+// ... existing code ...
+
+// Update Services Stack to use both clusters
+const svcStack = new ServicesStack(app, 'Services', {
+  env,
+  internalNLBApiDomain: clusters.applicationServices.nlbDomain,
+  eksClusterName: clusterConfigs.applicationServices.name,
+  eksClusterOIDCProviderArn: clusters.applicationServices.openIdConnectProviderArn,
+  codebuildKubectlRoleArn: clusters.applicationServices.codebuildKubectlRoleArn,
+  appSiteDistributionId: sitesStack.applicationSiteDistribution.distributionId,
+  appSiteCloudFrontDomain: sitesStack.applicationSiteDistribution.distributionDomainName,
+  sharedServiceAccountName: sharedServiceAccountName,
+  appHostedZoneId: hostedZoneId,
+  customDomain: customDomain,
+  // Add helm services cluster configuration
+  helmServicesClusterName: clusterConfigs.helmServices.name,
+  helmServicesClusterOIDCProviderArn: clusters.helmServices.openIdConnectProviderArn,
+  helmServicesNLBDomain: clusters.helmServices.nlbDomain,
+});
+
+
+service-stack.ts
+export interface ServicesStackProps extends cdk.StackProps {
+  // ... existing props ...
+  helmServicesClusterName: string;
+  helmServicesClusterOIDCProviderArn: string;
+  helmServicesNLBDomain: string;
+}
+
+export class ServicesStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: ServicesStackProps) {
+    super(scope, id, props);
+
+    // Create application services
+    new ApplicationService(this, 'ApplicationServices', {
+      // ... existing props ...
+      eksClusterName: props.eksClusterName,
+    });
+
+    // Create helm services
+    new ApplicationService(this, 'HelmServices', {
+      // ... existing props ...
+      eksClusterName: props.helmServicesClusterName,
+    });
+  }
+}
+
+application-service.ts
+export interface ApplicationServiceProps {
+  // ... existing props ...
+  eksClusterName: string;
+  clusterType?: 'application' | 'helm';
+}
+
+export class ApplicationService extends Construct {
+  constructor(scope: Construct, id: string, props: ApplicationServiceProps) {
+    super(scope, id);
+
+    // Use cluster-specific configurations
+    const clusterConfig = {
+      application: {
+        // Application services specific config
+      },
+      helm: {
+        // Helm services specific config
+      }
+    }[props.clusterType || 'application'];
+
+    // ... rest of the implementation
+  }
+}
