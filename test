@@ -1,7 +1,4 @@
-// ... existing code ...
-
-// Define cluster configurations
-const clusterConfigs = {
+const clusterConfigs: ClusterConfigs = {
   applicationServices: {
     name: 'ApplicationServicesCluster',
     services: ['application-services']
@@ -12,8 +9,12 @@ const clusterConfigs = {
   }
 };
 
-// Create clusters
-const clusters = {};
+// Create clusters with proper typing
+interface ClusterMap {
+  [key: string]: EKSClusterStack;
+}
+
+const clusters: ClusterMap = {};
 for (const [key, config] of Object.entries(clusterConfigs)) {
   clusters[key] = new EKSClusterStack(app, config.name, {
     env,
@@ -27,6 +28,8 @@ for (const [key, config] of Object.entries(clusterConfigs)) {
     hostedZoneId: hostedZoneId,
   });
 }
+
+// ... rest of the code remains the same ...
 
 // ... existing code ...
 
