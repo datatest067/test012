@@ -1,0 +1,112 @@
+// ... existing imports ...
+
+// Create a new stack for VPCs
+class VpcStack extends cdk.Stack {
+  public readonly applicationVpc: ec2.Vpc;
+  public readonly helmVpc: ec2.Vpc;
+
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create VPC for application services
+    this.applicationVpc = new ec2.Vpc(this, 'ApplicationServicesVpc', {
+      vpcName: 'ApplicationServices-vpc',
+      cidr: '10.0.0.0/16',
+      maxAzs: 3,
+      natGateways: 1,
+      subnetConfiguration: [
+        {
+          cidrMask: 24,
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        {
+          cidrMask: 24,
+          name: 'Private',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        },
+        {
+          cidrMask: 24,
+          name: 'Isolated',
+          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+      ],
+    });
+
+    // Create VPC for helm services
+    this.helmVpc = new ec2.Vpc(this, 'HelmServicesVpc', {
+      vpcName: 'HelmServices-vpc',
+      cidr: '10.1.0.0/16',
+      maxAzs: 3,
+      natGateways: 1,
+      subnetConfiguration: [
+        {
+          cidrMask: 24,
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        {
+          cidrMask: 24,
+          name: 'Private',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        },
+        {
+          cidrMask: 24,
+          name: 'Isolated',
+          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+      ],
+    });
+  }
+}
+
+const app = new cdk.App();
+
+// Create VPC stack first
+const vpcStack = new VpcStack(app, 'VpcStack', {
+  env,
+});
+
+// Create clusters with proper typing
+interface ClusterMap {
+  [key: string]: EKSClusterStack;
+}
+
+const clusters: ClusterMap = {};
+for (const [key, config] of Object.entries(clusterConfigs)) {
+  clusters[key] = new EKSClusterStack(app, config.name, {
+    env,
+    clusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    tenantOnboardingProjectName: tenantOnboardingProjectName,
+    tenantDeletionProjectName: tenantDeletionProjectName,
+    sharedServiceAccountName: sharedServiceAccountName,
+    kubecostToken: kubecostToken,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+    vpc: key === 'applicationServices' ? vpcStack.applicationVpc : vpcStack.helmVpc,
+  });
+}
+
+// ... rest of the code ...
+
+// Update Services Stack to use both clusters
+const svcStack = new ServicesStack(app, 'Services', {
+  env,
+  internalNLBApiDomain: clusters.applicationServices.nlbDomain,
+  eksClusterName: clusterConfigs.applicationServices.name,
+  eksClusterOIDCProviderArn: clusters.applicationServices.openIdConnectProviderArn,
+  codebuildKubectlRoleArn: clusters.applicationServices.codebuildKubectlRoleArn,
+  appSiteDistributionId: sitesStack.applicationSiteDistribution.distributionId,
+  appSiteCloudFrontDomain: sitesStack.applicationSiteDistribution.distributionDomainName,
+  helmSiteDistributionId: sitesStack.helmSiteDistribution.distributionId,
+  helmSiteCloudFrontDomain: sitesStack.helmSiteDistribution.distributionDomainName,
+  sharedServiceAccountName: sharedServiceAccountName,
+  appHostedZoneId: hostedZoneId,
+  customDomain: customDomain,
+  helmServicesClusterName: clusterConfigs.helmServices.name,
+  helmServicesClusterOIDCProviderArn: clusters.helmServices.openIdConnectProviderArn,
+  helmServicesNLBDomain: clusters.helmServices.nlbDomain,
+  applicationVpc: vpcStack.applicationVpc,
+  helmVpc: vpcStack.helmVpc,
+});
