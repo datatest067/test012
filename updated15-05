@@ -1,0 +1,240 @@
+app.ts
+
+// ... existing imports ...
+
+// Define VPC configurations for each cluster
+const vpcConfigs = {
+  applicationServices: {
+    cidr: '10.0.0.0/16',
+    maxAzs: 3,
+    natGateways: 1,
+    subnetConfigs: [
+      {
+        cidrMask: 24,
+        name: 'Public',
+        subnetType: ec2.SubnetType.PUBLIC,
+      },
+      {
+        cidrMask: 24,
+        name: 'Private',
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      {
+        cidrMask: 24,
+        name: 'Isolated',
+        subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+      },
+    ],
+  },
+  helmServices: {
+    cidr: '10.1.0.0/16',
+    maxAzs: 3,
+    natGateways: 1,
+    subnetConfigs: [
+      {
+        cidrMask: 24,
+        name: 'Public',
+        subnetType: ec2.SubnetType.PUBLIC,
+      },
+      {
+        cidrMask: 24,
+        name: 'Private',
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      {
+        cidrMask: 24,
+        name: 'Isolated',
+        subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+      },
+    ],
+  },
+};
+
+// Define cluster configurations
+const clusterConfigs: ClusterConfigs = {
+  applicationServices: {
+    name: 'ApplicationServicesCluster',
+    services: ['application-services'],
+    vpcConfig: vpcConfigs.applicationServices,
+  },
+  helmServices: {
+    name: 'HelmServicesCluster',
+    services: ['helm-services'],
+    vpcConfig: vpcConfigs.helmServices,
+  },
+};
+
+// Create clusters with proper typing
+interface ClusterMap {
+  [key: string]: EKSClusterStack;
+}
+
+const clusters: ClusterMap = {};
+for (const [key, config] of Object.entries(clusterConfigs)) {
+  // Create VPC for each cluster
+  const vpc = new ec2.Vpc(this, `${config.name}Vpc`, {
+    vpcName: `${config.name}-vpc`,
+    cidr: config.vpcConfig.cidr,
+    maxAzs: config.vpcConfig.maxAzs,
+    natGateways: config.vpcConfig.natGateways,
+    subnetConfiguration: config.vpcConfig.subnetConfigs,
+  });
+
+  clusters[key] = new EKSClusterStack(app, config.name, {
+    env,
+    clusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    tenantOnboardingProjectName: tenantOnboardingProjectName,
+    tenantDeletionProjectName: tenantDeletionProjectName,
+    sharedServiceAccountName: sharedServiceAccountName,
+    kubecostToken: kubecostToken,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+    vpc: vpc, // Pass the VPC to the cluster stack
+  });
+}
+
+eks-cluster.ts
+
+export interface EKSClusterStackProps extends cdk.StackProps {
+  // ... existing props ...
+  readonly vpc: ec2.IVpc;
+}
+
+export class EKSClusterStack extends cdk.Stack {
+  readonly vpc: ec2.IVpc;
+  // ... other properties ...
+
+  constructor(scope: Construct, id: string, props: EKSClusterStackProps) {
+    super(scope, id, props);
+
+    this.vpc = props.vpc;
+
+    // Create EKS cluster using the provided VPC
+    const cluster = new eks.Cluster(this, 'Cluster', {
+      vpc: this.vpc,
+      clusterName: props.clusterName,
+      // ... other cluster configurations ...
+    });
+
+    // ... rest of the implementation ...
+  }
+}
+
+##helm-Service.ts
+
+export class HelmService extends Construct {
+  // ... existing properties ...
+
+  constructor(scope: Construct, id: string, props: HelmServiceProps) {
+    super(scope, id);
+
+    // Create S3 bucket for Helm charts
+    this.helmChartsBucket = new s3.Bucket(this, `${id}HelmChartsBucket`, {
+      // ... existing bucket configuration ...
+    });
+
+    // Create security group for RDS in the same VPC as the EKS cluster
+    const dbSecurityGroup = new ec2.SecurityGroup(this, `${id}DBSecurityGroup`, {
+      vpc: props.vpc,
+      description: 'Security group for RDS database',
+      allowAllOutbound: true,
+    });
+
+    // Allow inbound access from EKS cluster
+    dbSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
+      ec2.Port.tcp(props.databasePort || 5432),
+      'Allow access from EKS cluster'
+    );
+
+    // Create database secret
+    this.databaseSecret = new secretsmanager.Secret(this, `${id}DBSecret`, {
+      // ... existing secret configuration ...
+    });
+
+    // Create RDS cluster in the isolated subnet of the same VPC
+    this.databaseCluster = new rds.DatabaseCluster(this, `${id}Database`, {
+      engine: props.databaseEngine || rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds.AuroraPostgresEngineVersion.VER_14_6,
+      }),
+      instanceProps: {
+        instanceType: props.databaseInstanceType || ec2.InstanceType.of(
+          ec2.InstanceClass.T3,
+          ec2.InstanceSize.MEDIUM
+        ),
+        vpc: props.vpc,
+        vpcSubnets: {
+          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+        securityGroups: [dbSecurityGroup],
+      },
+      credentials: rds.Credentials.fromSecret(this.databaseSecret),
+      databaseName: props.databaseName || `${props.name.replace(/-/g, '_')}_db`,
+      port: props.databasePort || 5432,
+      backup: {
+        retention: Duration.days(7),
+        preferredWindow: '03:00-04:00',
+      },
+      monitoringInterval: Duration.seconds(60),
+      instances: 1,
+      removalPolicy: RemovalPolicy.SNAPSHOT,
+    });
+
+    // Add VPC endpoints for AWS services
+    props.vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+    });
+
+    props.vpc.addInterfaceEndpoint('RdsEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.RDS,
+    });
+
+    props.vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
+    // ... rest of the implementation ...
+  }
+}
+
+service-stack.ts
+
+export class ServicesStack extends Stack {
+  constructor(scope: Construct, id: string, props: ServicesStackProps) {
+    super(scope, id, props);
+
+    // Create application services
+    new ApplicationService(this, 'ApplicationServices', {
+      // ... existing props ...
+      eksClusterName: props.eksClusterName,
+      vpc: props.applicationVpc,
+    });
+
+    // Create helm services
+    new HelmService(this, 'HelmServices', {
+      name: 'helm-services',
+      assetDirectory: './services/helm-services',
+      ecrImageName: 'helm-services',
+      eksClusterName: props.helmServicesClusterName,
+      codebuildKubectlRole: props.codebuildKubectlRole,
+      internalApiDomain: props.internalNLBApiDomain,
+      serviceUrlPrefix: 'helm-services',
+      clusterType: 'helm',
+      clusterConfig: {
+        name: props.helmServicesClusterName,
+        services: ['helm-services']
+      },
+      vpc: props.helmVpc, // Use the Helm services VPC
+      databaseName: 'helm_services_db',
+      databasePort: 5432,
+      databaseEngine: rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds.AuroraPostgresEngineVersion.VER_14_6,
+      }),
+      databaseInstanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T3,
+        ec2.InstanceSize.MEDIUM
+      ),
+    });
+  }
+}
