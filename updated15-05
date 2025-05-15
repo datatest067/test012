@@ -2,6 +2,30 @@ app.ts
 
 // ... existing imports ...
 
+// Define VPC configuration interface
+interface VpcConfig {
+  cidr: string;
+  maxAzs: number;
+  natGateways: number;
+  subnetConfigs: {
+    cidrMask: number;
+    name: string;
+    subnetType: ec2.SubnetType;
+  }[];
+}
+
+// Define cluster configuration interface
+interface ClusterConfig {
+  name: string;
+  services: string[];
+  vpcConfig: VpcConfig; // Add vpcConfig to the interface
+}
+
+// Define cluster configurations type
+interface ClusterConfigs {
+  [key: string]: ClusterConfig;
+}
+
 // Define VPC configurations for each cluster
 const vpcConfigs = {
   applicationServices: {
@@ -50,7 +74,7 @@ const vpcConfigs = {
   },
 };
 
-// Define cluster configurations
+// Define cluster configurations with proper typing
 const clusterConfigs: ClusterConfigs = {
   applicationServices: {
     name: 'ApplicationServicesCluster',
@@ -93,6 +117,8 @@ for (const [key, config] of Object.entries(clusterConfigs)) {
     vpc: vpc, // Pass the VPC to the cluster stack
   });
 }
+
+// ... rest of the code ...
 
 eks-cluster.ts
 
