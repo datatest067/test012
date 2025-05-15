@@ -1,0 +1,228 @@
+// In ServicesStack constructor
+new TenantOnboarding(this, 'TenantOnboarding', {
+  appSiteCloudFrontDomain: props.appSiteCloudFrontDomain,
+  appSiteDistributionId: props.appSiteDistributionId,
+  codebuildKubectlRole: appServicesRole,  // For application services
+  helmServicesCodebuildKubectlRole: helmServicesRole,  // For helm services
+  eksClusterOIDCProviderArn: props.eksClusterOIDCProviderArn,
+  eksClusterName: props.eksClusterName,
+  applicationServiceBuildProjectNames: ['ProductService', 'OrderService'],
+  helmServiceBuildProjectNames: ['RankingService'],
+  onboardingProjectName: 'TenantOnboardingProject',
+  deletionProjectName: 'TenantDeletionProject',
+  appSiteHostedZoneId: props.appHostedZoneId,
+  appSiteCustomDomain: props.customDomain ? `app.${props.customDomain!}` : undefined,
+  assetDirectory: path.join(__dirname, '..', 'services', 'tenant-onboarding'),
+});
+### tenant-onboarding
+export interface TenantOnboardingProps {
+  readonly onboardingProjectName: string;
+  readonly deletionProjectName: string;
+  readonly assetDirectory: string;
+
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;  // This will be appServicesRole
+  readonly helmServicesCodebuildKubectlRole: iam.IRole;  // Add new role for helm services
+  readonly eksClusterOIDCProviderArn: string;
+
+  readonly applicationServiceBuildProjectNames: string[];
+  readonly helmServiceBuildProjectNames: string[];
+
+  readonly appSiteDistributionId: string;
+  readonly appSiteCloudFrontDomain: string;
+  readonly appSiteCustomDomain?: string;
+  readonly appSiteHostedZoneId?: string;
+}
+export class TenantOnboarding extends Construct {
+  readonly repositoryUrl: string;
+
+  constructor(scope: Construct, id: string, props: TenantOnboardingProps) {
+    super(scope, id);
+
+    // Add permissions for both roles
+    this.addTenantOnboardingPermissions(props.codebuildKubectlRole, props);
+    this.addTenantOnboardingPermissions(props.helmServicesCodebuildKubectlRole, props);
+
+    const sourceBucket = new SourceBucket(this, `${id}SourceBucket`, {
+      name: 'TenantOnboarding',
+      assetDirectory: props.assetDirectory,
+    });
+
+    const onboardingCfnParams: { [key: string]: string } = {
+      TenantId: '$TENANT_ID',
+      CompanyName: '"$COMPANY_NAME"',
+      TenantAdminEmail: '"$ADMIN_EMAIL"',
+      AppDistributionId: `"${props.appSiteDistributionId}"`,
+      DistributionDomain: `"${props.appSiteCloudFrontDomain}"`,
+      EKSClusterName: `"${props.eksClusterName}"`,
+      KubectlRoleArn: `"${props.codebuildKubectlRole.roleArn}"`,
+      HelmServicesKubectlRoleArn: `"${props.helmServicesCodebuildKubectlRole.roleArn}"`,
+      OIDCProviderArn: `"${props.eksClusterOIDCProviderArn}"`,
+    };
+
+    const cfnParamString = Object.entries(onboardingCfnParams)
+      .map((x) => `--parameters ${x[0]}=${x[1]}`)
+      .join(' ');
+
+    // Create separate projects for application and helm services
+    const appServicesOnboardingProject = new codebuild.Project(this, `AppServicesOnboardingProject`, {
+      projectName: `${props.onboardingProjectName}-app`,
+      source: sourceBucket.source,
+      role: props.codebuildKubectlRole,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      },
+      environmentVariables: {
+        TENANT_ID: { value: '' },
+        COMPANY_NAME: { value: '' },
+        ADMIN_EMAIL: { value: '' },
+        PLAN: { value: '' },
+        AWS_ACCOUNT: { value: Stack.of(this).account },
+        AWS_REGION: { value: Stack.of(this).region },
+        APP_SITE_CUSTOM_DOMAIN: { value: props.appSiteCustomDomain ?? '' },
+        APP_SITE_HOSTED_ZONE: { value: props.appSiteHostedZoneId ?? '' },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: { commands: ['npm i'] },
+          pre_build: { commands: [] },
+          build: {
+            commands: [
+              'npm run cdk bootstrap',
+              `npm run cdk deploy TenantStack-$TENANT_ID -- --require-approval=never ${cfnParamString}`,
+            ],
+          },
+          post_build: {
+            commands: props.applicationServiceBuildProjectNames.map(
+              (x) => `aws codebuild start-build --project-name ${x}TenantDeploy --environment-variables-override name=TENANT_ID,value=\"$TENANT_ID\",type=PLAINTEXT`
+            ),
+          },
+        },
+      }),
+    });
+
+    const helmServicesOnboardingProject = new codebuild.Project(this, `HelmServicesOnboardingProject`, {
+      projectName: `${props.onboardingProjectName}-helm`,
+      source: sourceBucket.source,
+      role: props.helmServicesCodebuildKubectlRole,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      },
+      environmentVariables: {
+        TENANT_ID: { value: '' },
+        COMPANY_NAME: { value: '' },
+        ADMIN_EMAIL: { value: '' },
+        PLAN: { value: '' },
+        AWS_ACCOUNT: { value: Stack.of(this).account },
+        AWS_REGION: { value: Stack.of(this).region },
+        APP_SITE_CUSTOM_DOMAIN: { value: props.appSiteCustomDomain ?? '' },
+        APP_SITE_HOSTED_ZONE: { value: props.appSiteHostedZoneId ?? '' },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: { commands: ['npm i'] },
+          pre_build: { commands: [] },
+          build: {
+            commands: [
+              'npm run cdk bootstrap',
+              `npm run cdk deploy TenantStack-$TENANT_ID -- --require-approval=never ${cfnParamString}`,
+            ],
+          },
+          post_build: {
+            commands: props.helmServiceBuildProjectNames.map(
+              (x) => `aws codebuild start-build --project-name ${x}TenantDeploy --environment-variables-override name=TENANT_ID,value=\"$TENANT_ID\",type=PLAINTEXT`
+            ),
+          },
+        },
+      }),
+    });
+
+    // Create separate projects for application and helm services deletion
+    const appServicesDeletionProject = new codebuild.Project(this, 'AppServicesDeletionProject', {
+      projectName: `${props.deletionProjectName}-app`,
+      role: props.codebuildKubectlRole,
+      source: sourceBucket.source,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      },
+      environmentVariables: {
+        TENANT_ID: { value: '' },
+        AWS_ACCOUNT: { value: Stack.of(this).account },
+        AWS_REGION: { value: Stack.of(this).region },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: { commands: ['npm i'] },
+          pre_build: { commands: [] },
+          build: {
+            commands: [
+              'npm run cdk bootstrap',
+              `npm run cdk destroy TenantStack-$TENANT_ID -- --require-approval=never -f`,
+            ],
+          },
+          post_build: { commands: [] },
+        },
+      }),
+    });
+
+    const helmServicesDeletionProject = new codebuild.Project(this, 'HelmServicesDeletionProject', {
+      projectName: `${props.deletionProjectName}-helm`,
+      role: props.helmServicesCodebuildKubectlRole,
+      source: sourceBucket.source,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      },
+      environmentVariables: {
+        TENANT_ID: { value: '' },
+        AWS_ACCOUNT: { value: Stack.of(this).account },
+        AWS_REGION: { value: Stack.of(this).region },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: { commands: ['npm i'] },
+          pre_build: { commands: [] },
+          build: {
+            commands: [
+              'npm run cdk bootstrap',
+              `npm run cdk destroy TenantStack-$TENANT_ID -- --require-approval=never -f`,
+            ],
+          },
+          post_build: { commands: [] },
+        },
+      }),
+    });
+
+    // Add necessary permissions to both roles
+    props.codebuildKubectlRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['codebuild:StartBuild'],
+        resources: [
+          ...props.applicationServiceBuildProjectNames.map(name => 
+            Arn.format({ service: 'codebuild', resource: 'project', resourceName: `${name}TenantDeploy` }, this)
+          ),
+          appServicesOnboardingProject.projectArn,
+          appServicesDeletionProject.projectArn,
+        ],
+        effect: iam.Effect.ALLOW,
+      })
+    );
+
+    props.helmServicesCodebuildKubectlRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['codebuild:StartBuild'],
+        resources: [
+          ...props.helmServiceBuildProjectNames.map(name => 
+            Arn.format({ service: 'codebuild', resource: 'project', resourceName: `${name}TenantDeploy` }, this)
+          ),
+          helmServicesOnboardingProject.projectArn,
+          helmServicesDeletionProject.projectArn,
+        ],
+        effect: iam.Effect.ALLOW,
+      })
+    );
+  }
+}
