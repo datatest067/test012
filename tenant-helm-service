@@ -1,0 +1,199 @@
+#### tenant-onboarding
+export interface TenantOnboardingProps {
+  readonly onboardingProjectName: string;
+  readonly deletionProjectName: string;
+  readonly assetDirectory: string;
+
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly eksClusterOIDCProviderArn: string;
+  readonly helmServicesCodebuildKubectlRole: iam.IRole;
+  readonly helmServicesClusterOIDCProviderArn: string;
+  readonly helmServicesClusterName: string;
+
+  readonly applicationServiceBuildProjectNames: string[];
+  readonly helmServiceBuildProjectNames: string[];
+
+  readonly appSiteDistributionId: string;
+  readonly appSiteCloudFrontDomain: string;
+  readonly appSiteCustomDomain?: string;
+  readonly appSiteHostedZoneId?: string;
+}
+###tenant-onboarding-stack.ts
+export interface TenantOnboardingStackProps extends StackProps {
+  readonly plan: string;
+  readonly tenantid: string;
+  readonly customDomain?: string;
+  readonly hostedZoneId?: string;
+  readonly eksClusterName: string;
+  readonly eksClusterOIDCProviderArn: string;
+  readonly helmServicesClusterName: string;
+  readonly helmServicesClusterOIDCProviderArn: string;
+}
+
+export class TenantOnboardingStack extends Stack {
+  constructor(scope: Construct, id: string, props: TenantOnboardingStackProps) {
+    super(scope, id, props);
+
+    const tenantId = new CfnParameter(this, 'TenantId', {});
+    const companyName = new CfnParameter(this, 'CompanyName', {});
+    const tenantAdminEmail = new CfnParameter(this, 'TenantAdminEmail', {});
+    const appDistributionId = new CfnParameter(this, 'AppDistributionId', {});
+    const distributionDomain = new CfnParameter(this, 'DistributionDomain', {});
+    const eksClusterName = new CfnParameter(this, 'EKSClusterName', {});
+    const eksKubectlRoleArn = new CfnParameter(this, 'KubectlRoleArn', {});
+    const eksClusterOIDCProviderArn = new CfnParameter(this, 'OIDCProviderArn', {});
+    const helmServicesClusterName = new CfnParameter(this, 'HelmServicesClusterName', {});
+    const helmServicesClusterOIDCProviderArn = new CfnParameter(this, 'HelmServicesClusterOIDCProviderArn', {});
+
+    // ... rest of the code ...
+
+    const appProvider = eks.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+      this,
+      'AppOIDCProvider',
+      eksClusterOIDCProviderArn.valueAsString
+    );
+
+    const helmProvider = eks.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+      this,
+      'HelmOIDCProvider',
+      helmServicesClusterOIDCProviderArn.valueAsString
+    );
+
+    const appCluster = eks.Cluster.fromClusterAttributes(this, 'AppEKSCluster', {
+      clusterName: eksClusterName.valueAsString,
+      kubectlRoleArn: eksKubectlRoleArn.valueAsString,
+      openIdConnectProvider: appProvider,
+    });
+
+    const helmCluster = eks.Cluster.fromClusterAttributes(this, 'HelmEKSCluster', {
+      clusterName: helmServicesClusterName.valueAsString,
+      kubectlRoleArn: eksKubectlRoleArn.valueAsString,
+      openIdConnectProvider: helmProvider,
+    });
+
+    // ... rest of the code ...
+  }
+}
+#helm-service
+export interface HelmServiceProps {
+  readonly name: string;
+  readonly assetDirectory: string;
+  readonly ecrImageName: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly internalApiDomain: string;
+  readonly serviceUrlPrefix: string;
+  readonly helmServicesClusterOIDCProviderArn: string;
+}
+
+#service-stack
+export interface ServicesStackProps extends StackProps {
+  readonly eksClusterOIDCProviderArn: string;
+  readonly internalNLBApiDomain: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRoleArn: string;
+  readonly appSiteDistributionId: string;
+  readonly appSiteCloudFrontDomain: string;
+  readonly sharedServiceAccountName: string;
+  readonly appHostedZoneId?: string;
+  readonly customDomain?: string;
+  // Add new properties for helm services
+  readonly helmServicesClusterName: string;
+  readonly helmServicesClusterOIDCProviderArn: string;
+  readonly helmServicesNLBDomain: string;
+  readonly helmServicesCodebuildKubectlRoleArn: string;
+}
+
+export class ServicesStack extends Stack {
+  constructor(scope: Construct, id: string, props: ServicesStackProps) {
+    super(scope, id, props);
+
+    const appServicesRole = iam.Role.fromRoleArn(
+      this, 
+      'AppServicesCodebuildKubectlRole', 
+      props.codebuildKubectlRoleArn
+    );
+
+    const helmServicesRole = iam.Role.fromRoleArn(
+      this, 
+      'HelmServicesCodebuildKubectlRole', 
+      props.helmServicesCodebuildKubectlRoleArn
+    );
+
+    // Application services use appServicesRole
+    new ApplicationService(this, 'ProductService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: appServicesRole,
+      name: 'ProductService',
+      ecrImageName: 'product-svc',
+      serviceUrlPrefix: 'products',
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'application-services',
+        'product-service'
+      ),
+    });
+
+    // ... other application services ...
+
+    // Helm services use helmServicesRole
+    new HelmService(this, 'RankingService', {
+      internalApiDomain: props.helmServicesNLBDomain,
+      eksClusterName: props.helmServicesClusterName,
+      codebuildKubectlRole: helmServicesRole,
+      name: 'RankingService',
+      ecrImageName: 'ranking',
+      serviceUrlPrefix: 'ranking',
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'helm-services',
+        'ranking-service'
+      ),
+      helmServicesClusterOIDCProviderArn: props.helmServicesClusterOIDCProviderArn,
+    });
+
+    // Tenant onboarding with separate roles and OIDC providers
+    new TenantOnboarding(this, 'TenantOnboarding', {
+      appSiteCloudFrontDomain: props.appSiteCloudFrontDomain,
+      appSiteDistributionId: props.appSiteDistributionId,
+      codebuildKubectlRole: appServicesRole,
+      helmServicesCodebuildKubectlRole: helmServicesRole,
+      eksClusterOIDCProviderArn: props.eksClusterOIDCProviderArn,
+      helmServicesClusterOIDCProviderArn: props.helmServicesClusterOIDCProviderArn,
+      eksClusterName: props.eksClusterName,
+      helmServicesClusterName: props.helmServicesClusterName,
+      applicationServiceBuildProjectNames: ['ProductService', 'OrderService'],
+      helmServiceBuildProjectNames: ['RankingService'],
+      onboardingProjectName: 'TenantOnboardingProject',
+      deletionProjectName: 'TenantDeletionProject',
+      appSiteHostedZoneId: props.appHostedZoneId,
+      appSiteCustomDomain: props.customDomain ? `app.${props.customDomain!}` : undefined,
+      assetDirectory: path.join(__dirname, '..', 'services', 'tenant-onboarding'),
+    });
+  }
+}
+
+##app.ts
+const svcStack = new ServicesStack(app, 'Services', {
+  env,
+  internalNLBApiDomain: clusters.applicationServices.nlbDomain,
+  eksClusterName: clusterConfigs.applicationServices.name,
+  eksClusterOIDCProviderArn: clusters.applicationServices.openIdConnectProviderArn,
+  codebuildKubectlRoleArn: clusters.applicationServices.codebuildKubectlRoleArn,
+  appSiteDistributionId: sitesStack.applicationSiteDistribution.distributionId,
+  appSiteCloudFrontDomain: sitesStack.applicationSiteDistribution.distributionDomainName,
+  sharedServiceAccountName: sharedServiceAccountName,
+  appHostedZoneId: hostedZoneId,
+  customDomain: customDomain,
+  // Add helm services cluster configuration
+  helmServicesClusterName: clusterConfigs.helmServices.name,
+  helmServicesClusterOIDCProviderArn: clusters.helmServices.openIdConnectProviderArn,
+  helmServicesNLBDomain: clusters.helmServices.nlbDomain,
+  helmServicesCodebuildKubectlRoleArn: clusters.helmServices.codebuildKubectlRoleArn,
+});
