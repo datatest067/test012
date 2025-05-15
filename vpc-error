@@ -1,4 +1,15 @@
-// ... existing imports ...
+#!/usr/bin/env node
+import 'source-map-support/register';
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';  // Add this import
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import { EKSClusterStack } from '../lib/eks-cluster-stack';
+import { StaticSitesStack } from '../lib/static-sites-stack';
+import { ServicesStack } from '../lib/services-stack';
+import { CommonResourcesStack } from '../lib/common-resources-stack';
+import { ApiStack } from '../lib/api-stack';
+import { ControlPlaneStack } from '../lib/control-plane-stack';
+import { AppPlaneStack } from '../lib/app-plane-stack';
 
 // Create a new stack for VPCs
 class VpcStack extends cdk.Stack {
@@ -60,53 +71,4 @@ class VpcStack extends cdk.Stack {
   }
 }
 
-const app = new cdk.App();
-
-// Create VPC stack first
-const vpcStack = new VpcStack(app, 'VpcStack', {
-  env,
-});
-
-// Create clusters with proper typing
-interface ClusterMap {
-  [key: string]: EKSClusterStack;
-}
-
-const clusters: ClusterMap = {};
-for (const [key, config] of Object.entries(clusterConfigs)) {
-  clusters[key] = new EKSClusterStack(app, config.name, {
-    env,
-    clusterName: config.name,
-    ingressControllerName: ingressControllerName,
-    tenantOnboardingProjectName: tenantOnboardingProjectName,
-    tenantDeletionProjectName: tenantDeletionProjectName,
-    sharedServiceAccountName: sharedServiceAccountName,
-    kubecostToken: kubecostToken,
-    customDomain: customDomain,
-    hostedZoneId: hostedZoneId,
-    vpc: key === 'applicationServices' ? vpcStack.applicationVpc : vpcStack.helmVpc,
-  });
-}
-
 // ... rest of the code ...
-
-// Update Services Stack to use both clusters
-const svcStack = new ServicesStack(app, 'Services', {
-  env,
-  internalNLBApiDomain: clusters.applicationServices.nlbDomain,
-  eksClusterName: clusterConfigs.applicationServices.name,
-  eksClusterOIDCProviderArn: clusters.applicationServices.openIdConnectProviderArn,
-  codebuildKubectlRoleArn: clusters.applicationServices.codebuildKubectlRoleArn,
-  appSiteDistributionId: sitesStack.applicationSiteDistribution.distributionId,
-  appSiteCloudFrontDomain: sitesStack.applicationSiteDistribution.distributionDomainName,
-  helmSiteDistributionId: sitesStack.helmSiteDistribution.distributionId,
-  helmSiteCloudFrontDomain: sitesStack.helmSiteDistribution.distributionDomainName,
-  sharedServiceAccountName: sharedServiceAccountName,
-  appHostedZoneId: hostedZoneId,
-  customDomain: customDomain,
-  helmServicesClusterName: clusterConfigs.helmServices.name,
-  helmServicesClusterOIDCProviderArn: clusters.helmServices.openIdConnectProviderArn,
-  helmServicesNLBDomain: clusters.helmServices.nlbDomain,
-  applicationVpc: vpcStack.applicationVpc,
-  helmVpc: vpcStack.helmVpc,
-});
