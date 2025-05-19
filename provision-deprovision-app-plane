@@ -1,0 +1,118 @@
+#!/bin/bash -e
+
+# Provision EKS tenant for both application and helm services
+aws codebuild start-build --project-name TenantOnboardingProject-$appServiceClusterName --environment-variables-override \
+name=TENANT_ID,value=$tenantId,type=PLAINTEXT \
+name=PLAN,value=$tier,type=PLAINTEXT \
+name=COMPANY_NAME,value=$tenantName,type=PLAINTEXT \
+name=ADMIN_EMAIL,value=$email,type=PLAINTEXT \
+name=CLUSTER_NAME,value=$appServiceClusterName,type=PLAINTEXT
+
+# Wait for app service stack creation
+STACK_NAME="TenantStack-$tenantId-$appServiceClusterName"
+echo "Waiting for app service stack creation..."
+aws cloudformation wait stack-exists --stack-name $STACK_NAME
+aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
+
+# Provision helm service
+aws codebuild start-build --project-name TenantOnboardingProject-$helmServiceClusterName --environment-variables-override \
+name=TENANT_ID,value=$tenantId,type=PLAINTEXT \
+name=PLAN,value=$tier,type=PLAINTEXT \
+name=COMPANY_NAME,value=$tenantName,type=PLAINTEXT \
+name=ADMIN_EMAIL,value=$email,type=PLAINTEXT \
+name=CLUSTER_NAME,value=$helmServiceClusterName,type=PLAINTEXT
+
+# Wait for helm service stack creation
+STACK_NAME="TenantStack-$tenantId-$helmServiceClusterName"
+echo "Waiting for helm service stack creation..."
+aws cloudformation wait stack-exists --stack-name $STACK_NAME
+aws cloudformation wait stack-create-complete --stack-name $STACK_NAME
+
+# Get outputs from both stacks
+APP_STACK_NAME="TenantStack-$tenantId-$appServiceClusterName"
+HELM_STACK_NAME="TenantStack-$tenantId-$helmServiceClusterName"
+
+# Get app service outputs
+SAAS_TENANT_ID=$(aws cloudformation describe-stacks --stack-name $APP_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='TenantId'].OutputValue" --output text)
+SAAS_APP_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name $APP_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='ClientId'].OutputValue" --output text)
+SAAS_AUTH_SERVER=$(aws cloudformation describe-stacks --stack-name $APP_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='AuthServer'].OutputValue" --output text)
+SAAS_REDIRECT_URL=$(aws cloudformation describe-stacks --stack-name $APP_STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='RedirectUri'].OutputValue" --output text)
+
+# Export variables
+export tenantStatus="Complete"
+export tenantConfig=$(jq --arg SAAS_TENANT_ID "$SAAS_TENANT_ID" \
+  --arg SAAS_APP_CLIENT_ID "$SAAS_APP_CLIENT_ID" \
+  --arg SAAS_AUTH_SERVER "$SAAS_AUTH_SERVER" \
+  --arg SAAS_REDIRECT_URL "$SAAS_REDIRECT_URL" \
+  -n '{"tenantId":$SAAS_TENANT_ID,"appClientId":$SAAS_APP_CLIENT_ID,"authServer":$SAAS_AUTH_SERVER,"redirectUrl":$SAAS_REDIRECT_URL}')
+
+###deprovision.sh
+
+#!/bin/bash -e
+
+# Delete app service stack
+APP_STACK_NAME="TenantStack-$tenantId-$appServiceClusterName"
+echo "Deleting app service stack..."
+aws cloudformation delete-stack --stack-name $APP_STACK_NAME
+aws cloudformation wait stack-delete-complete --stack-name $APP_STACK_NAME
+
+# Delete helm service stack
+HELM_STACK_NAME="TenantStack-$tenantId-$helmServiceClusterName"
+echo "Deleting helm service stack..."
+aws cloudformation delete-stack --stack-name $HELM_STACK_NAME
+aws cloudformation wait stack-delete-complete --stack-name $HELM_STACK_NAME
+
+# Export status
+export tenantStatus="Deleted"
+
+
+##app-plane-stack
+const provisioningJobRunnerProps: BashJobRunnerProps = {
+  eventManager,
+  permissions: new PolicyDocument({
+    statements: [
+      new PolicyStatement({
+        actions: ['*'],
+        resources: ['*'],
+        effect: Effect.ALLOW,
+      }),
+    ],
+  }),
+  script: fs.readFileSync('./scripts/provisioning.sh', 'utf8'),
+  postScript: '',
+  environmentStringVariablesFromIncomingEvent: [
+    'tenantId',
+    'tier',
+    'tenantName',
+    'email',
+    'tenantStatus',
+    'appServiceClusterName',  // Add this
+    'helmServiceClusterName', // Add this
+  ],
+  environmentVariablesToOutgoingEvent: ['tenantConfig', 'tenantStatus'],
+  outgoingEvent: DetailType.PROVISION_SUCCESS,
+  incomingEvent: DetailType.ONBOARDING_REQUEST,
+};
+
+const deprovisioningJobRunnerProps: BashJobRunnerProps = {
+  eventManager,
+  permissions: new PolicyDocument({
+    statements: [
+      new PolicyStatement({
+        actions: ['*'],
+        resources: ['*'],
+        effect: Effect.ALLOW,
+      }),
+    ],
+  }),
+  script: fs.readFileSync('./scripts/deprovisioning.sh', 'utf8'),
+  environmentStringVariablesFromIncomingEvent: [
+    'tenantId', 
+    'tier',
+    'appServiceClusterName',  // Add this
+    'helmServiceClusterName', // Add this
+  ],
+  environmentVariablesToOutgoingEvent: ['tenantStatus'],
+  outgoingEvent: DetailType.DEPROVISION_SUCCESS,
+  incomingEvent: DetailType.OFFBOARDING_REQUEST,
+};
