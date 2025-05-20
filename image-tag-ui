@@ -1,0 +1,379 @@
+// clients/projects/admin/src/app/views/tenants/create.component.ts
+import { Component, OnInit } from '@angular/core';
+import { FormBuilder, FormGroup, Validators } from '@angular/forms';
+
+@Component({
+  selector: 'app-create',
+  templateUrl: './create.component.html'
+})
+export class CreateComponent implements OnInit {
+  form: FormGroup;
+  submitting = false;
+  error = false;
+  success = false;
+
+  // Application Services
+  applicationServices = [
+    { name: 'ProductService', imageTag: 'latest' },
+    { name: 'OrderService', imageTag: 'latest' }
+  ];
+
+  // Helm Services
+  helmServices = [
+    { name: 'RankingService', imageTag: 'latest' }
+  ];
+
+  constructor(private fb: FormBuilder, private http: HttpClient) {
+    this.form = this.fb.group({
+      tenantName: [null, [Validators.required]],
+      email: [null, [Validators.email, Validators.required]],
+      companyName: [null, [Validators.required]],
+      tier: [null, [Validators.required]],
+      // Application Services Image Tags
+      appImageTags: this.fb.group({
+        ProductService: ['latest'],
+        OrderService: ['latest']
+      }),
+      // Helm Services Image Tags
+      helmImageTags: this.fb.group({
+        RankingService: ['latest']
+      })
+    });
+  }
+
+  onSubmit() {
+    const API_URL = `${environment.apiUrl}/tenants`;
+    const domain = environment.domain;
+
+    const tenant = {
+      ...this.form.value,
+      tenantStatus: 'In progress',
+      customDomain: domain,
+    };
+
+    this.submitting = true;
+    this.http.post(API_URL, tenant).subscribe({
+      complete: () => {
+        this.submitting = false;
+        this.success = true;
+        this.error = false;
+      },
+      error: (err) => {
+        this.submitting = false;
+        this.success = false;
+        this.error = true;
+        console.log(err);
+      },
+    });
+  }
+
+  // ... rest of the existing methods ...
+}
+
+<!-- clients/projects/admin/src/app/views/tenants/create.component.html -->
+<alert type="danger" *ngIf="error" [dismissible]="true">
+  <strong>Oh snap!</strong> There was an error provisioning your tenant.
+</alert>
+<alert type="danger" *ngIf="success" [dismissible]="true">
+  <strong>Success!</strong> Successfully provisioned your tenant.
+</alert>
+
+<div class="row">
+  <div class="col-md-12 col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <strong>Provision Tenant</strong>
+      </div>
+      <div class="card-body">
+        <form [formGroup]="form">
+          <!-- Existing form fields -->
+          <div class="form-group">
+            <c-input-group class="mb-3">
+              <span cInputGroupText><i class="fa fa-user"></i></span>
+              <input
+                type="text"
+                id="fullname"
+                name="fullname"
+                class="form-control"
+                formControlName="tenantName"
+                placeholder="Full Name"
+                [ngClass]="displayFieldCss('name')"
+                required
+              />
+            </c-input-group>
+            <div *ngIf="isFieldInvalid('name')" class="alert alert-danger">
+              <div *ngIf="hasRequiredError('name')">Name is required.</div>
+            </div>
+          </div>
+
+          <!-- ... other existing form fields ... -->
+
+          <!-- Application Services Image Tags -->
+          <div class="card mt-4">
+            <div class="card-header">
+              <strong>Application Services Image Tags</strong>
+            </div>
+            <div class="card-body">
+              <div formGroupName="appImageTags">
+                <div *ngFor="let service of applicationServices" class="form-group">
+                  <label [for]="'app-' + service.name">{{service.name}}</label>
+                  <c-input-group class="mb-3">
+                    <span cInputGroupText><i class="fa fa-tag"></i></span>
+                    <input
+                      type="text"
+                      [id]="'app-' + service.name"
+                      [formControlName]="service.name"
+                      class="form-control"
+                      placeholder="Enter image tag"
+                    />
+                  </c-input-group>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Helm Services Image Tags -->
+          <div class="card mt-4">
+            <div class="card-header">
+              <strong>Helm Services Image Tags</strong>
+            </div>
+            <div class="card-body">
+              <div formGroupName="helmImageTags">
+                <div *ngFor="let service of helmServices" class="form-group">
+                  <label [for]="'helm-' + service.name">{{service.name}}</label>
+                  <c-input-group class="mb-3">
+                    <span cInputGroupText><i class="fa fa-tag"></i></span>
+                    <input
+                      type="text"
+                      [id]="'helm-' + service.name"
+                      [formControlName]="service.name"
+                      class="form-control"
+                      placeholder="Enter image tag"
+                    />
+                  </c-input-group>
+                </div>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="card-footer">
+        <div class="d-flex">
+          <a class="ml-auto" routerLink="/tenants">
+            <button class="btn button-secondary">Cancel</button>
+          </a>
+          <button
+            type="submit"
+            (click)="onSubmit()"
+            class="btn btn-primary"
+            [disabled]="!form.valid"
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+// clients/projects/admin/src/app/views/tenants/create.component.scss
+.card {
+  .card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+  }
+}
+
+.form-group {
+  margin-bottom: 1rem;
+  
+  label {
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+  }
+}
+
+.c-input-group {
+  .input-group-text {
+    background-color: #f8f9fa;
+    border-right: none;
+  }
+  
+  .form-control {
+    border-left: none;
+    
+    &:focus {
+      box-shadow: none;
+      border-color: #ced4da;
+    }
+  }
+}
+
+
+// lib/constructs/application-service.ts
+export interface ApplicationServiceProps {
+  readonly name: string;
+  readonly assetDirectory: string;
+  readonly ecrImageName: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly internalApiDomain: string;
+  readonly serviceUrlPrefix: string;
+  readonly imageTag?: string; // Add this new property
+}
+
+export class ApplicationService extends Construct {
+  // ... existing code ...
+
+  constructor(scope: Construct, id: string, props: ApplicationServiceProps) {
+    super(scope, id);
+
+    // ... existing code ...
+
+    // Update the tenant deployment project
+    const tenantDeployProject = new codebuild.Project(this, `${id}EKSTenantDeployProject`, {
+      // ... existing configuration ...
+      environmentVariables: {
+        // ... existing variables ...
+        IMAGE_TAG: {
+          value: props.imageTag || 'latest', // Add this new variable
+        },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          // ... existing phases ...
+          build: {
+            commands: [
+              'aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME',
+              'echo "  newName: $ECR_REPO_URI" >> kubernetes/kustomization.yaml',
+              'echo "  newTag: $IMAGE_TAG" >> kubernetes/kustomization.yaml', // Update this line
+              'echo "  value: $API_HOST" >> kubernetes/host-patch.yaml',
+              'cp kubernetes/path-patch-template.yaml kubernetes/path-patch.yaml',
+              'echo "  value: /$TENANT_ID/$SERVICE_URL_PREFIX" >> kubernetes/path-patch.yaml',
+              'cp kubernetes/svc-acc-patch-template.yaml kubernetes/svc-acc-patch.yaml',
+              `echo "  value: $TENANT_ID-service-account" >> kubernetes/svc-acc-patch.yaml`,
+              'kubectl apply -k kubernetes/ -n $TENANT_ID',
+            ],
+          },
+        },
+      }),
+    });
+  }
+}
+
+// lib/constructs/helm-service.ts
+export interface HelmServiceProps {
+  readonly name: string;
+  readonly assetDirectory: string;
+  readonly ecrImageName: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly internalApiDomain: string;
+  readonly serviceUrlPrefix: string;
+  readonly imageTag?: string; // Add this new property
+}
+
+export class HelmService extends Construct {
+  // ... existing code ...
+
+  constructor(scope: Construct, id: string, props: HelmServiceProps) {
+    super(scope, id);
+
+    // ... existing code ...
+
+    // Update the tenant deployment project
+    const tenantDeployProject = new codebuild.Project(this, `${id}EKSTenantDeployProject`, {
+      // ... existing configuration ...
+      environmentVariables: {
+        // ... existing variables ...
+        IMAGE_TAG: {
+          value: props.imageTag || 'latest', // Add this new variable
+        },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          // ... existing phases ...
+          build: {
+            commands: [
+              'aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME',
+              'echo "  newName: $ECR_REPO_URI" >> kubernetes/kustomization.yaml',
+              'echo "  newTag: $IMAGE_TAG" >> kubernetes/kustomization.yaml', // Update this line
+              'echo "  value: $API_HOST" >> kubernetes/host-patch.yaml',
+              'cp kubernetes/path-patch-template.yaml kubernetes/path-patch.yaml',
+              'echo "  value: /$TENANT_ID/$SERVICE_URL_PREFIX" >> kubernetes/path-patch.yaml',
+              'cp kubernetes/svc-acc-patch-template.yaml kubernetes/svc-acc-patch.yaml',
+              `echo "  value: $TENANT_ID-service-account" >> kubernetes/svc-acc-patch.yaml`,
+              'kubectl apply -k kubernetes/ -n $TENANT_ID',
+            ],
+          },
+        },
+      }),
+    });
+  }
+}
+
+// lib/services-stack.ts
+export class ServicesStack extends Stack {
+  constructor(scope: Construct, id: string, props: ServicesStackProps) {
+    super(scope, id, props);
+
+    const role = iam.Role.fromRoleArn(this, 'CodebuildKubectlRole', props.codebuildKubectlRoleArn);
+
+    // application services
+    new ApplicationService(this, 'ProductService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'ProductService',
+      ecrImageName: 'product-svc',
+      serviceUrlPrefix: 'products',
+      imageTag: 'latest', // Add default image tag
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'application-services',
+        'product-service'
+      ),
+    });
+
+    new ApplicationService(this, 'OrderService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'OrderService',
+      ecrImageName: 'order-svc',
+      serviceUrlPrefix: 'orders',
+      imageTag: 'latest', // Add default image tag
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'application-services',
+        'order-service'
+      ),
+    });
+
+    new HelmService(this, 'RankingService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'RankingService',
+      ecrImageName: 'ranking',
+      serviceUrlPrefix: 'ranking',
+      imageTag: 'latest', // Add default image tag
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'helm-services',
+        'ranking-service'
+      ),
+    });
+
+    // ... rest of the code ...
+  }
+}
