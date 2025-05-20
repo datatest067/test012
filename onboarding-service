@@ -1,0 +1,642 @@
+// clients/projects/admin/src/app/views/tenants/models/tenant.ts
+export interface TenantConfig {
+  tenantId: string;
+  appClientId: string;
+  authServer: string;
+  redirectUrl: string;
+  serviceSelection?: {
+    applicationServices: boolean;
+    helmServices: boolean;
+  };
+  imageTags?: {
+    application?: {
+      [serviceName: string]: string;
+    };
+    helm?: {
+      [serviceName: string]: string;
+    };
+  };
+}
+
+// clients/projects/admin/src/app/views/tenants/create.component.ts
+import { Component, OnInit } from '@angular/core';
+import { FormBuilder, FormGroup, Validators } from '@angular/forms';
+
+@Component({
+  selector: 'app-create',
+  templateUrl: './create.component.html'
+})
+export class CreateComponent implements OnInit {
+  form: FormGroup;
+  submitting = false;
+  error = false;
+  success = false;
+
+  // Application Services
+  applicationServices = [
+    { name: 'ProductService', imageTag: 'latest' },
+    { name: 'OrderService', imageTag: 'latest' }
+  ];
+
+  // Helm Services
+  helmServices = [
+    { name: 'RankingService', imageTag: 'latest' }
+  ];
+
+  constructor(private fb: FormBuilder, private http: HttpClient) {
+    this.form = this.fb.group({
+      tenantName: [null, [Validators.required]],
+      email: [null, [Validators.email, Validators.required]],
+      companyName: [null, [Validators.required]],
+      tier: [null, [Validators.required]],
+      serviceSelection: this.fb.group({
+        applicationServices: [false],
+        helmServices: [false]
+      }),
+      // Application Services Image Tags
+      appImageTags: this.fb.group({
+        ProductService: ['latest'],
+        OrderService: ['latest']
+      }),
+      // Helm Services Image Tags
+      helmImageTags: this.fb.group({
+        RankingService: ['latest']
+      })
+    });
+
+    // Subscribe to service selection changes
+    this.form.get('serviceSelection')?.valueChanges.subscribe(selection => {
+      const appImageTags = this.form.get('appImageTags');
+      const helmImageTags = this.form.get('helmImageTags');
+
+      if (selection.applicationServices) {
+        appImageTags?.enable();
+      } else {
+        appImageTags?.disable();
+      }
+
+      if (selection.helmServices) {
+        helmImageTags?.enable();
+      } else {
+        helmImageTags?.disable();
+      }
+    });
+  }
+
+  onSubmit() {
+    const API_URL = `${environment.apiUrl}/tenants`;
+    const domain = environment.domain;
+
+    const formValue = this.form.value;
+    const tenant = {
+      tenantName: formValue.tenantName,
+      email: formValue.email,
+      companyName: formValue.companyName,
+      tier: formValue.tier,
+      tenantStatus: 'In progress',
+      customDomain: domain,
+      serviceSelection: formValue.serviceSelection,
+      imageTags: {
+        application: formValue.serviceSelection.applicationServices ? formValue.appImageTags : undefined,
+        helm: formValue.serviceSelection.helmServices ? formValue.helmImageTags : undefined
+      }
+    };
+
+    this.submitting = true;
+    this.http.post(API_URL, tenant).subscribe({
+      complete: () => {
+        this.submitting = false;
+        this.success = true;
+        this.error = false;
+      },
+      error: (err) => {
+        this.submitting = false;
+        this.success = false;
+        this.error = true;
+        console.log(err);
+      },
+    });
+  }
+
+  // ... rest of the existing methods ...
+}
+
+<!-- clients/projects/admin/src/app/views/tenants/create.component.html -->
+<div class="card">
+  <div class="card-header">
+    <strong>Provision Tenant</strong>
+  </div>
+  <div class="card-body">
+    <form [formGroup]="form">
+      <!-- Existing form fields -->
+      <div class="form-group">
+        <c-input-group class="mb-3">
+          <span cInputGroupText><i class="fa fa-user"></i></span>
+          <input
+            type="text"
+            id="fullname"
+            name="fullname"
+            class="form-control"
+            formControlName="tenantName"
+            placeholder="Full Name"
+            [ngClass]="displayFieldCss('name')"
+            required
+          />
+        </c-input-group>
+        <div *ngIf="isFieldInvalid('name')" class="alert alert-danger">
+          <div *ngIf="hasRequiredError('name')">Name is required.</div>
+        </div>
+      </div>
+
+      <!-- ... other existing form fields ... -->
+
+      <!-- Service Selection -->
+      <div class="card mt-4">
+        <div class="card-header">
+          <strong>Service Selection</strong>
+        </div>
+        <div class="card-body">
+          <div formGroupName="serviceSelection">
+            <div class="form-check mb-3">
+              <input
+                type="checkbox"
+                class="form-check-input"
+                id="applicationServices"
+                formControlName="applicationServices"
+              />
+              <label class="form-check-label" for="applicationServices">
+                Application Services
+              </label>
+            </div>
+            <div class="form-check mb-3">
+              <input
+                type="checkbox"
+                class="form-check-input"
+                id="helmServices"
+                formControlName="helmServices"
+              />
+              <label class="form-check-label" for="helmServices">
+                Helm Services
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Application Services Image Tags -->
+      <div class="card mt-4" *ngIf="form.get('serviceSelection.applicationServices')?.value">
+        <div class="card-header">
+          <strong>Application Services Image Tags</strong>
+        </div>
+        <div class="card-body">
+          <div formGroupName="appImageTags">
+            <div *ngFor="let service of applicationServices" class="form-group">
+              <label [for]="'app-' + service.name">{{service.name}}</label>
+              <c-input-group class="mb-3">
+                <span cInputGroupText><i class="fa fa-tag"></i></span>
+                <input
+                  type="text"
+                  [id]="'app-' + service.name"
+                  [formControlName]="service.name"
+                  class="form-control"
+                  placeholder="Enter image tag"
+                />
+              </c-input-group>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Helm Services Image Tags -->
+      <div class="card mt-4" *ngIf="form.get('serviceSelection.helmServices')?.value">
+        <div class="card-header">
+          <strong>Helm Services Image Tags</strong>
+        </div>
+        <div class="card-body">
+          <div formGroupName="helmImageTags">
+            <div *ngFor="let service of helmServices" class="form-group">
+              <label [for]="'helm-' + service.name">{{service.name}}</label>
+              <c-input-group class="mb-3">
+                <span cInputGroupText><i class="fa fa-tag"></i></span>
+                <input
+                  type="text"
+                  [id]="'helm-' + service.name"
+                  [formControlName]="service.name"
+                  class="form-control"
+                  placeholder="Enter image tag"
+                />
+              </c-input-group>
+            </div>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+  <div class="card-footer">
+    <div class="d-flex">
+      <a class="ml-auto" routerLink="/tenants">
+        <button class="btn button-secondary">Cancel</button>
+      </a>
+      <button
+        type="submit"
+        (click)="onSubmit()"
+        class="btn btn-primary"
+        [disabled]="!form.valid || (!form.get('serviceSelection.applicationServices')?.value && !form.get('serviceSelection.helmServices')?.value)">
+        Create
+      </button>
+    </div>
+  </div>
+</div>
+
+// clients/projects/admin/src/app/views/tenants/create.component.scss
+.form-check {
+  padding-left: 1.5rem;
+  
+  .form-check-input {
+    margin-left: -1.5rem;
+  }
+  
+  .form-check-label {
+    font-weight: 500;
+  }
+}
+
+.card {
+  .card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+  }
+}
+
+.form-group {
+  margin-bottom: 1rem;
+  
+  label {
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+  }
+}
+
+// clients/projects/admin/src/app/views/tenants/tenant.service.ts
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import { TenantConfig } from './models/tenant';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class TenantService {
+  constructor(private http: HttpClient) {}
+
+  createTenant(tenant: TenantConfig): Observable<any> {
+    return this.http.post(`${environment.apiUrl}/tenants`, tenant);
+  }
+
+  getTenants(): Observable<TenantConfig[]> {
+    return this.http.get<TenantConfig[]>(`${environment.apiUrl}/tenants`);
+  }
+}
+
+// services/tenant-onboarding/tenant-onboarding.service.ts
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { CodeBuild } from 'aws-sdk';
+
+@Injectable()
+export class TenantOnboardingService {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly codeBuild: CodeBuild,
+  ) {}
+
+  async onboardTenant(tenant: any) {
+    const { serviceSelection, imageTags } = tenant;
+
+    // Handle application services
+    if (serviceSelection?.applicationServices) {
+      await this.deployApplicationServices(tenant, imageTags?.application);
+    }
+
+    // Handle helm services
+    if (serviceSelection?.helmServices) {
+      await this.deployHelmServices(tenant, imageTags?.helm);
+    }
+  }
+
+  private async deployApplicationServices(tenant: any, imageTags: any) {
+    const applicationServices = ['ProductService', 'OrderService'];
+    
+    for (const service of applicationServices) {
+      if (imageTags?.[service]) {
+        await this.deployService(tenant, service, imageTags[service]);
+      }
+    }
+  }
+
+  private async deployHelmServices(tenant: any, imageTags: any) {
+    const helmServices = ['RankingService'];
+    
+    for (const service of helmServices) {
+      if (imageTags?.[service]) {
+        await this.deployService(tenant, service, imageTags[service]);
+      }
+    }
+  }
+
+  private async deployService(tenant: any, service: string, imageTag: string) {
+    const params = {
+      projectName: `${service}TenantDeploy`,
+      environmentVariablesOverride: [
+        {
+          name: 'TENANT_ID',
+          value: tenant.tenantId,
+        },
+        {
+          name: 'IMAGE_TAG',
+          value: imageTag,
+        },
+      ],
+    };
+
+    await this.codeBuild.startBuild(params).promise();
+  }
+}
+
+// services/tenant-onboarding/tenant-onboarding.controller.ts
+import { Controller, Post, Body } from '@nestjs/common';
+import { TenantOnboardingService } from './tenant-onboarding.service';
+
+@Controller('tenants')
+export class TenantOnboardingController {
+  constructor(private readonly tenantOnboardingService: TenantOnboardingService) {}
+
+  @Post()
+  async createTenant(@Body() tenant: any) {
+    await this.tenantOnboardingService.onboardTenant(tenant);
+    return { message: 'Tenant onboarding started successfully' };
+  }
+}
+
+// services/tenant-onboarding/tenant-onboarding.module.ts
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TenantOnboardingController } from './tenant-onboarding.controller';
+import { TenantOnboardingService } from './tenant-onboarding.service';
+
+@Module({
+  imports: [ConfigModule],
+  controllers: [TenantOnboardingController],
+  providers: [TenantOnboardingService],
+})
+export class TenantOnboardingModule {}
+
+// services/tenant-onboarding/.env
+AWS_REGION=us-east-1
+CODEBUILD_PROJECT_PREFIX=TenantOnboarding
+
+# services/tenant-onboarding/Dockerfile
+FROM node:16-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+RUN npm run build
+
+EXPOSE 3000
+
+CMD ["npm", "run", "start:prod"]
+
+// services/tenant-onboarding/package.json
+{
+  "name": "tenant-onboarding",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main"
+  },
+  "dependencies": {
+    "@nestjs/common": "^8.0.0",
+    "@nestjs/config": "^8.0.0",
+    "@nestjs/core": "^8.0.0",
+    "@nestjs/platform-express": "^8.0.0",
+    "aws-sdk": "^2.1000.0",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^8.0.0",
+    "@types/express": "^4.17.13",
+    "@types/node": "^16.0.0",
+    "typescript": "^4.5.0"
+  }
+}
+
+// lib/constructs/tenant-onboarding.ts
+import { RemovalPolicy, Stack } from 'aws-cdk-lib';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import { Construct } from 'constructs';
+import { SourceBucket } from './source-bucket';
+
+export interface TenantOnboardingProps {
+  readonly appSiteCloudFrontDomain: string;
+  readonly appSiteDistributionId: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly eksClusterOIDCProviderArn: string;
+  readonly eksClusterName: string;
+  readonly applicationServiceBuildProjectNames: string[];
+  readonly helmServiceBuildProjectNames: string[];
+  readonly onboardingProjectName: string;
+  readonly deletionProjectName: string;
+  readonly appSiteHostedZoneId?: string;
+  readonly appSiteCustomDomain?: string;
+  readonly assetDirectory: string;
+}
+
+export class TenantOnboarding extends Construct {
+  constructor(scope: Construct, id: string, props: TenantOnboardingProps) {
+    super(scope, id);
+
+    const sourceBucket = new SourceBucket(this, `${props.onboardingProjectName}SourceBucket`, {
+      assetDirectory: props.assetDirectory,
+      name: props.onboardingProjectName,
+    });
+
+    // Update the onboarding project to handle service selection
+    const project = new codebuild.Project(this, `${id}EKSDeployProject`, {
+      projectName: props.onboardingProjectName,
+      source: sourceBucket.source,
+      role: props.codebuildKubectlRole,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      },
+      environmentVariables: {
+        CLUSTER_NAME: {
+          value: props.eksClusterName,
+        },
+        AWS_REGION: {
+          value: Stack.of(this).region,
+        },
+        AWS_ACCOUNT: {
+          value: Stack.of(this).account,
+        },
+        TENANT_ID: {
+          value: '',
+        },
+        SERVICE_SELECTION: {
+          value: '',
+        },
+        IMAGE_TAGS: {
+          value: '',
+        },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: {
+            commands: [
+              'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"',
+              'chmod +x ./kubectl',
+            ],
+          },
+          build: {
+            commands: [
+              'aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME',
+              // Parse service selection and image tags
+              'SERVICE_SELECTION_JSON=$(echo $SERVICE_SELECTION | jq -r .)',
+              'IMAGE_TAGS_JSON=$(echo $IMAGE_TAGS | jq -r .)',
+              // Deploy application services if selected
+              'if [ "$(echo $SERVICE_SELECTION_JSON | jq -r .applicationServices)" = "true" ]; then',
+              '  for service in ${APPLICATION_SERVICES[@]}; do',
+              '    IMAGE_TAG=$(echo $IMAGE_TAGS_JSON | jq -r ".application.$service")',
+              '    if [ "$IMAGE_TAG" != "null" ]; then',
+              '      aws codebuild start-build --project-name ${service}TenantDeploy --environment-variables-override name=TENANT_ID,value=$TENANT_ID name=IMAGE_TAG,value=$IMAGE_TAG',
+              '    fi',
+              '  done',
+              'fi',
+              // Deploy helm services if selected
+              'if [ "$(echo $SERVICE_SELECTION_JSON | jq -r .helmServices)" = "true" ]; then',
+              '  for service in ${HELM_SERVICES[@]}; do',
+              '    IMAGE_TAG=$(echo $IMAGE_TAGS_JSON | jq -r ".helm.$service")',
+              '    if [ "$IMAGE_TAG" != "null" ]; then',
+              '      aws codebuild start-build --project-name ${service}TenantDeploy --environment-variables-override name=TENANT_ID,value=$TENANT_ID name=IMAGE_TAG,value=$IMAGE_TAG',
+              '    fi',
+              '  done',
+              'fi',
+            ],
+          },
+        },
+      }),
+    });
+
+    // ... rest of the existing code ...
+  }
+}
+
+// services/tenant-onboarding/src/tenant-onboarding.service.ts
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { CodeBuild } from 'aws-sdk';
+
+@Injectable()
+export class TenantOnboardingService {
+  private readonly codeBuild: CodeBuild;
+  private readonly applicationServices: string[];
+  private readonly helmServices: string[];
+
+  constructor(private readonly configService: ConfigService) {
+    this.codeBuild = new CodeBuild({
+      region: this.configService.get('AWS_REGION'),
+    });
+    this.applicationServices = ['ProductService', 'OrderService'];
+    this.helmServices = ['RankingService'];
+  }
+
+  async onboardTenant(tenant: any) {
+    const { tenantId, serviceSelection, imageTags } = tenant;
+
+    const params = {
+      projectName: this.configService.get('CODEBUILD_PROJECT_PREFIX'),
+      environmentVariablesOverride: [
+        {
+          name: 'TENANT_ID',
+          value: tenantId,
+        },
+        {
+          name: 'SERVICE_SELECTION',
+          value: JSON.stringify(serviceSelection),
+        },
+        {
+          name: 'IMAGE_TAGS',
+          value: JSON.stringify(imageTags),
+        },
+      ],
+    };
+
+    await this.codeBuild.startBuild(params).promise();
+  }
+
+  async deleteTenant(tenantId: string) {
+    const params = {
+      projectName: this.configService.get('CODEBUILD_PROJECT_PREFIX'),
+      environmentVariablesOverride: [
+        {
+          name: 'TENANT_ID',
+          value: tenantId,
+        },
+        {
+          name: 'ACTION',
+          value: 'DELETE',
+        },
+      ],
+    };
+
+    await this.codeBuild.startBuild(params).promise();
+  }
+}
+
+// services/tenant-onboarding/src/tenant-onboarding.controller.ts
+import { Controller, Post, Body, Delete, Param } from '@nestjs/common';
+import { TenantOnboardingService } from './tenant-onboarding.service';
+
+@Controller('tenants')
+export class TenantOnboardingController {
+  constructor(private readonly tenantOnboardingService: TenantOnboardingService) {}
+
+  @Post()
+  async createTenant(@Body() tenant: any) {
+    await this.tenantOnboardingService.onboardTenant(tenant);
+    return { message: 'Tenant onboarding started successfully' };
+  }
+
+  @Delete(':tenantId')
+  async deleteTenant(@Param('tenantId') tenantId: string) {
+    await this.tenantOnboardingService.deleteTenant(tenantId);
+    return { message: 'Tenant deletion started successfully' };
+  }
+}
+
+// services/tenant-onboarding/src/tenant-onboarding.module.ts
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TenantOnboardingController } from './tenant-onboarding.controller';
+import { TenantOnboardingService } from './tenant-onboarding.service';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+  ],
+  controllers: [TenantOnboardingController],
+  providers: [TenantOnboardingService],
+})
+export class TenantOnboardingModule {}
