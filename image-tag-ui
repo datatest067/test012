@@ -377,3 +377,167 @@ export class ServicesStack extends Stack {
     // ... rest of the code ...
   }
 }
+
+## to avoid pass null value in the image tag
+// lib/constructs/application-service.ts
+export interface ApplicationServiceProps {
+  readonly name: string;
+  readonly assetDirectory: string;
+  readonly ecrImageName: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly internalApiDomain: string;
+  readonly serviceUrlPrefix: string;
+  readonly imageTag?: string; // Optional image tag
+}
+
+export class ApplicationService extends Construct {
+  constructor(scope: Construct, id: string, props: ApplicationServiceProps) {
+    super(scope, id);
+
+    // ... existing code ...
+
+    // Update the tenant deployment project
+    const tenantDeployProject = new codebuild.Project(this, `${id}EKSTenantDeployProject`, {
+      // ... existing configuration ...
+      environmentVariables: {
+        // ... existing variables ...
+        IMAGE_TAG: {
+          value: props.imageTag || 'latest', // Default to 'latest' if not provided
+        },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          // ... existing phases ...
+          build: {
+            commands: [
+              'aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME',
+              'echo "  newName: $ECR_REPO_URI" >> kubernetes/kustomization.yaml',
+              'echo "  newTag: ${IMAGE_TAG:-latest}" >> kubernetes/kustomization.yaml', // Use shell parameter expansion
+              'echo "  value: $API_HOST" >> kubernetes/host-patch.yaml',
+              'cp kubernetes/path-patch-template.yaml kubernetes/path-patch.yaml',
+              'echo "  value: /$TENANT_ID/$SERVICE_URL_PREFIX" >> kubernetes/path-patch.yaml',
+              'cp kubernetes/svc-acc-patch-template.yaml kubernetes/svc-acc-patch.yaml',
+              `echo "  value: $TENANT_ID-service-account" >> kubernetes/svc-acc-patch.yaml`,
+              'kubectl apply -k kubernetes/ -n $TENANT_ID',
+            ],
+          },
+        },
+      }),
+    });
+  }
+}
+
+// lib/constructs/helm-service.ts
+export interface HelmServiceProps {
+  readonly name: string;
+  readonly assetDirectory: string;
+  readonly ecrImageName: string;
+  readonly eksClusterName: string;
+  readonly codebuildKubectlRole: iam.IRole;
+  readonly internalApiDomain: string;
+  readonly serviceUrlPrefix: string;
+  readonly imageTag?: string; // Optional image tag
+}
+
+export class HelmService extends Construct {
+  constructor(scope: Construct, id: string, props: HelmServiceProps) {
+    super(scope, id);
+
+    // ... existing code ...
+
+    // Update the tenant deployment project
+    const tenantDeployProject = new codebuild.Project(this, `${id}EKSTenantDeployProject`, {
+      // ... existing configuration ...
+      environmentVariables: {
+        // ... existing variables ...
+        IMAGE_TAG: {
+          value: props.imageTag || 'latest', // Default to 'latest' if not provided
+        },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          // ... existing phases ...
+          build: {
+            commands: [
+              'aws eks --region $AWS_REGION update-kubeconfig --name $CLUSTER_NAME',
+              'echo "  newName: $ECR_REPO_URI" >> kubernetes/kustomization.yaml',
+              'echo "  newTag: ${IMAGE_TAG:-latest}" >> kubernetes/kustomization.yaml', // Use shell parameter expansion
+              'echo "  value: $API_HOST" >> kubernetes/host-patch.yaml',
+              'cp kubernetes/path-patch-template.yaml kubernetes/path-patch.yaml',
+              'echo "  value: /$TENANT_ID/$SERVICE_URL_PREFIX" >> kubernetes/path-patch.yaml',
+              'cp kubernetes/svc-acc-patch-template.yaml kubernetes/svc-acc-patch.yaml',
+              `echo "  value: $TENANT_ID-service-account" >> kubernetes/svc-acc-patch.yaml`,
+              'kubectl apply -k kubernetes/ -n $TENANT_ID',
+            ],
+          },
+        },
+      }),
+    });
+  }
+}
+
+// lib/services-stack.ts
+export class ServicesStack extends Stack {
+  constructor(scope: Construct, id: string, props: ServicesStackProps) {
+    super(scope, id, props);
+
+    const role = iam.Role.fromRoleArn(this, 'CodebuildKubectlRole', props.codebuildKubectlRoleArn);
+
+    // application services
+    new ApplicationService(this, 'ProductService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'ProductService',
+      ecrImageName: 'product-svc',
+      serviceUrlPrefix: 'products',
+      // imageTag is optional, will default to 'latest'
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'application-services',
+        'product-service'
+      ),
+    });
+
+    new ApplicationService(this, 'OrderService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'OrderService',
+      ecrImageName: 'order-svc',
+      serviceUrlPrefix: 'orders',
+      // imageTag is optional, will default to 'latest'
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'application-services',
+        'order-service'
+      ),
+    });
+
+    new HelmService(this, 'RankingService', {
+      internalApiDomain: props.internalNLBApiDomain,
+      eksClusterName: props.eksClusterName,
+      codebuildKubectlRole: role,
+      name: 'RankingService',
+      ecrImageName: 'ranking',
+      serviceUrlPrefix: 'ranking',
+      // imageTag is optional, will default to 'latest'
+      assetDirectory: path.join(
+        __dirname,
+        '..',
+        'services',
+        'helm-services',
+        'ranking-service'
+      ),
+    });
+
+    // ... rest of the code ...
+  }
+}
