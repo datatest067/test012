@@ -1,0 +1,21 @@
+const event = {
+  detail: {
+    tenantId: "tenant-123",
+    tier: "standard",
+    tenantName: "Example Tenant",
+    email: "admin@example.com",
+    tenantStatus: "Pending",
+    appServiceClusterName: "app-cluster-1",  // Add this
+    helmServiceClusterName: "helm-cluster-1" // Add this
+  }
+};
+
+// Send the event to EventBridge
+await eventBridge.putEvents({
+  Entries: [{
+    Source: 'saas.tenant',
+    DetailType: 'ONBOARDING_REQUEST',
+    Detail: JSON.stringify(event.detail),
+    EventBusName: 'default'
+  }]
+}).promise();
