@@ -1,0 +1,201 @@
+// lib/eks-cluster-stack.ts
+
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as eks from 'aws-cdk-lib/aws-eks';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as k8s from 'aws-cdk-lib/aws-eks';
+
+export interface EKSClusterStackProps extends cdk.StackProps {
+  clusterName: string;
+  ingressControllerName: string;
+  tenantOnboardingProjectName: string;
+  tenantDeletionProjectName: string;
+  sharedServiceAccountName: string;
+  kubecostToken: string;
+  customDomain?: string;
+  hostedZoneId?: string;
+}
+
+export class EKSClusterStack extends cdk.Stack {
+  public readonly vpc: ec2.Vpc;
+  public readonly cluster: eks.Cluster;
+  public readonly albDomain: string;
+  public readonly openIdConnectProviderArn: string;
+  public readonly codebuildKubectlRoleArn: string;
+
+  constructor(scope: Construct, id: string, props: EKSClusterStackProps) {
+    super(scope, id, props);
+
+    // Create VPC
+    this.vpc = new ec2.Vpc(this, 'VPC', {
+      maxAzs: 2,
+      natGateways: 1,
+    });
+
+    // Create EKS Cluster with Kubernetes 1.31
+    this.cluster = new eks.Cluster(this, 'Cluster', {
+      vpc: this.vpc,
+      clusterName: props.clusterName,
+      version: eks.KubernetesVersion.V1_31,
+      defaultCapacity: 2,
+      defaultCapacityInstance: ec2.InstanceType.of(
+        ec2.InstanceClass.T3,
+        ec2.InstanceSize.MEDIUM
+      ),
+    });
+
+    // Create ALB Controller IAM Role
+    const albControllerRole = new iam.Role(this, 'AlbControllerRole', {
+      assumedBy: new iam.FederatedPrincipal(
+        this.cluster.openIdConnectProvider.openIdConnectProviderArn,
+        {
+          StringEquals: {
+            [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:aud`]: 'sts.amazonaws.com',
+            [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: 'system:serviceaccount:kube-system:aws-load-balancer-controller',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+    });
+
+    // Add ALB Controller policies
+    albControllerRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('AWSLoadBalancerControllerIAMPolicy')
+    );
+
+    // Create ALB Ingress Controller with updated version
+    const albChart = this.cluster.addHelmChart('AlbIngressController', {
+      chart: 'aws-load-balancer-controller',
+      repository: 'https://aws.github.io/eks-charts',
+      release: props.ingressControllerName,
+      values: {
+        clusterName: props.clusterName,
+        serviceAccount: {
+          create: true,
+          name: 'aws-load-balancer-controller',
+          annotations: {
+            'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+          },
+        },
+        region: this.region,
+        vpcId: this.vpc.vpcId,
+        image: {
+          repository: '602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-load-balancer-controller',
+          tag: 'v2.7.1', // Updated to latest version compatible with K8s 1.31
+        },
+        enableCertManager: true,
+        enableShield: true,
+        enableWaf: true,
+        enableWafv2: true,
+        defaultTags: {
+          'cluster-name': props.clusterName,
+          'environment': 'production',
+        },
+      },
+    });
+
+    // Create Kubernetes manifest for ALB Ingress Class
+    const albIngressClass = this.cluster.addManifest('AlbIngressClass', {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'IngressClass',
+      metadata: {
+        name: 'alb',
+        annotations: {
+          'ingressclass.kubernetes.io/is-default-class': 'true',
+        },
+      },
+      spec: {
+        controller: 'ingress.k8s.aws/alb',
+      },
+    });
+
+    // Create Kubernetes manifest for ALB Ingress Class Params
+    const albIngressClassParams = this.cluster.addManifest('AlbIngressClassParams', {
+      apiVersion: 'elbv2.k8s.aws/v1beta1',
+      kind: 'IngressClassParams',
+      metadata: {
+        name: 'alb-ingress-params',
+      },
+      spec: {
+        scheme: 'internet-facing',
+        ipAddressType: 'ipv4',
+        loadBalancerAttributes: [
+          {
+            key: 'idle_timeout.timeout_seconds',
+            value: '60',
+          },
+          {
+            key: 'routing.http.drop_invalid_header_fields.enabled',
+            value: 'true',
+          },
+          {
+            key: 'routing.http.preserve_host_header.enabled',
+            value: 'true',
+          },
+        ],
+        namespaceSelector: {
+          matchLabels: {
+            'kubernetes.io/metadata.name': 'default',
+          },
+        },
+      },
+    });
+
+    // Create Kubernetes manifest for ALB Ingress Controller Service Account
+    const albServiceAccount = this.cluster.addManifest('AlbServiceAccount', {
+      apiVersion: 'v1',
+      kind: 'ServiceAccount',
+      metadata: {
+        name: 'aws-load-balancer-controller',
+        namespace: 'kube-system',
+        annotations: {
+          'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+        },
+        labels: {
+          'app.kubernetes.io/name': 'aws-load-balancer-controller',
+          'app.kubernetes.io/component': 'controller',
+        },
+      },
+    });
+
+    // Add dependencies
+    albIngressClass.node.addDependency(albChart);
+    albIngressClassParams.node.addDependency(albChart);
+    albServiceAccount.node.addDependency(albChart);
+
+    // Create shared service account
+    const sharedServiceAccount = this.cluster.addServiceAccount('SharedServiceAccount', {
+      name: props.sharedServiceAccountName,
+      namespace: 'default',
+    });
+
+    // Add necessary permissions to shared service account
+    sharedServiceAccount.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'eks:DescribeCluster',
+          'eks:ListClusters',
+          'eks:AccessKubernetesApi',
+          'eks:ListAddons',
+          'eks:DescribeAddon',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // Export ALB domain
+    this.albDomain = `${props.clusterName}-alb.${this.region}.elb.amazonaws.com`;
+
+    // Export OIDC provider ARN
+    this.openIdConnectProviderArn = this.cluster.openIdConnectProvider.openIdConnectProviderArn;
+
+    // Export CodeBuild kubectl role ARN
+    this.codebuildKubectlRoleArn = this.cluster.kubectlRole?.roleArn || '';
+
+    // Add tags
+    cdk.Tags.of(this).add('cluster-name', props.clusterName);
+    cdk.Tags.of(this).add('environment', 'production');
+  }
+}
