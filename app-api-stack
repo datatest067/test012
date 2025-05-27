@@ -1,0 +1,181 @@
+// bin/app.ts
+
+// ... existing imports and code ...
+
+// Define API configurations for each cluster
+const apiConfigs: { [key: string]: { name: string; description: string } } = {
+  app: {
+    name: 'AppServiceApi',
+    description: 'API Gateway for App Service',
+  },
+  helm: {
+    name: 'HelmServiceApi',
+    description: 'API Gateway for Helm Service',
+  },
+};
+
+// Create API stacks for each cluster
+const apiStacks: { [key: string]: ApiStack } = {};
+
+for (const [key, config] of Object.entries(clusterConfigs)) {
+  // Create cluster stack
+  clusters[key] = new EKSClusterStack(app, config.name, {
+    env,
+    clusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    tenantOnboardingProjectName: tenantOnboardingProjectName,
+    tenantDeletionProjectName: tenantDeletionProjectName,
+    sharedServiceAccountName: sharedServiceAccountName,
+    kubecostToken: kubecostToken,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+  });
+
+  // Create corresponding API stack
+  apiStacks[key] = new ApiStack(app, apiConfigs[key].name, {
+    env,
+    eksClusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    internalNLBDomain: clusters[key].nlbDomain,
+    vpc: clusters[key].vpc,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+    description: apiConfigs[key].description,
+  });
+
+  // Export the API endpoints for each service
+  new cdk.CfnOutput(app, `${key}ServiceEndpoint`, {
+    value: `${apiStacks[key].api.url}`,
+    description: `${apiConfigs[key].description} Endpoint`,
+  });
+
+  if (customDomain) {
+    new cdk.CfnOutput(app, `CustomDomain${key}ServiceEndpoint`, {
+      value: `https://api.${customDomain}/${key}`,
+      description: `Custom Domain ${apiConfigs[key].description} Endpoint`,
+    });
+  }
+}
+
+// Export all API endpoints
+new cdk.CfnOutput(app, 'ApiEndpoints', {
+  value: JSON.stringify(
+    Object.entries(apiStacks).reduce((acc, [key, stack]) => {
+      acc[key] = stack.api.url;
+      return acc;
+    }, {} as { [key: string]: string })
+  ),
+  description: 'All API Endpoints',
+});
+
+// lib/api-stack.ts
+
+export interface ApiStackProps extends cdk.StackProps {
+  eksClusterName: string;
+  ingressControllerName: string;
+  internalNLBDomain: string;
+  vpc: ec2.IVpc;
+  customDomain?: string;
+  hostedZoneId?: string;
+  description: string;
+}
+
+export class ApiStack extends cdk.Stack {
+  public readonly api: apigateway.RestApi;
+
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id, props);
+
+    // Create API Gateway
+    this.api = new apigateway.RestApi(this, 'SaaSApi', {
+      restApiName: props.description,
+      description: props.description,
+      deployOptions: {
+        stageName: 'prod',
+      },
+    });
+
+    // Create VPC Link
+    const vpcLink = new apigateway.VpcLink(this, 'SaaSVpcLink', {
+      targets: [
+        new apigateway.VpcLinkTarget(props.vpc, {
+          port: 80,
+        }),
+      ],
+    });
+
+    // Get service name from the stack ID
+    const serviceName = id.toLowerCase().replace('serviceapi', '');
+
+    // Create service integration
+    const serviceIntegration = new apigateway.Integration({
+      type: apigateway.IntegrationType.HTTP_PROXY,
+      integrationHttpMethod: 'ANY',
+      options: {
+        connectionType: apigateway.ConnectionType.VPC_LINK,
+        vpcLink: vpcLink,
+        requestParameters: {
+          'integration.request.path.proxy': 'method.request.path.proxy',
+        },
+      },
+      uri: `http://${props.internalNLBDomain}/${serviceName}/{proxy}`,
+    });
+
+    // Create resources and methods
+    const serviceResource = this.api.root.addResource(serviceName);
+    const proxyResource = serviceResource.addResource('{proxy+}');
+    
+    proxyResource.addMethod('ANY', serviceIntegration, {
+      requestParameters: {
+        'method.request.path.proxy': true,
+      },
+    });
+
+    // Add custom domain if provided
+    if (props.customDomain && props.hostedZoneId) {
+      const domainName = `api.${props.customDomain}`;
+      const hostedZone = route53.HostedZone.fromHostedZoneId(
+        this,
+        'HostedZone',
+        props.hostedZoneId
+      );
+
+      const certificate = new acm.Certificate(this, 'ApiCertificate', {
+        domainName,
+        validation: acm.CertificateValidation.fromDns(hostedZone),
+      });
+
+      const domain = this.api.addDomainName('ApiDomain', {
+        domainName,
+        certificate,
+        endpointType: apigateway.EndpointType.REGIONAL,
+      });
+
+      new route53.ARecord(this, 'ApiAliasRecord', {
+        zone: hostedZone,
+        recordName: domainName,
+        target: route53.RecordTarget.fromAlias(
+          new targets.ApiGatewayDomain(domain)
+        ),
+      });
+    }
+
+    // Add CORS configuration
+    const corsOptions = {
+      allowOrigins: apigateway.Cors.ALL_ORIGINS,
+      allowMethods: apigateway.Cors.ALL_METHODS,
+      allowHeaders: [
+        'Content-Type',
+        'X-Amz-Date',
+        'Authorization',
+        'X-Api-Key',
+        'X-Amz-Security-Token',
+        'X-Amz-User-Agent',
+      ],
+      allowCredentials: true,
+    };
+
+    // Enable CORS
+    serviceResource.addCorsPreflight(corsOptions);
+  }
+}
