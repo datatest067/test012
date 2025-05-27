@@ -1,0 +1,233 @@
+// lib/eks-cluster-stack.ts
+
+export class EKSClusterStack extends cdk.Stack {
+  public readonly vpc: ec2.Vpc;
+  public readonly cluster: eks.Cluster;
+  public readonly albDomain: string; // Changed from nlbDomain
+
+  constructor(scope: Construct, id: string, props: EKSClusterStackProps) {
+    super(scope, id, props);
+
+    // ... existing VPC and cluster creation code ...
+
+    // Create ALB Ingress Controller
+    const albChart = cluster.addHelmChart('AlbIngressController', {
+      chart: 'aws-load-balancer-controller',
+      repository: 'https://aws.github.io/eks-charts',
+      release: props.ingressControllerName,
+      values: {
+        clusterName: props.clusterName,
+        serviceAccount: {
+          create: true,
+          name: 'aws-load-balancer-controller',
+          annotations: {
+            'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+          },
+        },
+        region: this.region,
+        vpcId: this.vpc.vpcId,
+        image: {
+          repository: '602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-load-balancer-controller',
+          tag: 'v2.5.4',
+        },
+      },
+    });
+
+    // Create ALB Controller IAM Role
+    const albControllerRole = new iam.Role(this, 'AlbControllerRole', {
+      assumedBy: new iam.FederatedPrincipal(
+        cluster.openIdConnectProvider.openIdConnectProviderArn,
+        {
+          StringEquals: {
+            [`${cluster.openIdConnectProvider.openIdConnectProviderIssuer}:aud`]: 'sts.amazonaws.com',
+            [`${cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: 'system:serviceaccount:kube-system:aws-load-balancer-controller',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+    });
+
+    // Add ALB Controller policies
+    albControllerRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('AWSLoadBalancerControllerIAMPolicy')
+    );
+
+    // Export ALB domain
+    this.albDomain = `${props.clusterName}-alb.${this.region}.elb.amazonaws.com`;
+  }
+}
+
+
+// lib/api-stack.ts
+
+export class ApiStack extends cdk.Stack {
+  public readonly api: apigateway.RestApi;
+
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id, props);
+
+    // Create API Gateway
+    this.api = new apigateway.RestApi(this, 'SaaSApi', {
+      restApiName: props.description,
+      description: props.description,
+      deployOptions: {
+        stageName: 'prod',
+      },
+    });
+
+    // Create VPC Link for ALB
+    const vpcLink = new apigateway.VpcLink(this, 'SaaSVpcLink', {
+      targets: [
+        new apigateway.VpcLinkTarget(props.vpc, {
+          port: 80,
+        }),
+      ],
+    });
+
+    // Get service name from the stack ID
+    const serviceName = id.toLowerCase().replace('serviceapi', '');
+
+    // Create service integration with ALB
+    const serviceIntegration = new apigateway.Integration({
+      type: apigateway.IntegrationType.HTTP_PROXY,
+      integrationHttpMethod: 'ANY',
+      options: {
+        connectionType: apigateway.ConnectionType.VPC_LINK,
+        vpcLink: vpcLink,
+        requestParameters: {
+          'integration.request.path.proxy': 'method.request.path.proxy',
+        },
+      },
+      uri: `http://${props.albDomain}/${serviceName}/{proxy}`, // Changed from nlbDomain
+    });
+
+    // ... rest of the API stack code ...
+  }
+}
+
+// services/tenant-onboarding/lib/tenant-onboarding-stack.ts
+
+export class TenantOnboardingStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: TenantOnboardingStackProps) {
+    super(scope, id, props);
+
+    // Create ALB Ingress for each service
+    const createAlbIngress = (serviceName: string, namespace: string) => {
+      return new k8s.KubernetesManifest(this, `${serviceName}Ingress`, {
+        cluster: props.cluster,
+        manifest: {
+          apiVersion: 'networking.k8s.io/v1',
+          kind: 'Ingress',
+          metadata: {
+            name: `${props.tenantId}-${serviceName}-ingress`,
+            namespace: namespace,
+            annotations: {
+              'kubernetes.io/ingress.class': 'alb',
+              'alb.ingress.kubernetes.io/scheme': 'internet-facing',
+              'alb.ingress.kubernetes.io/target-type': 'ip',
+              'alb.ingress.kubernetes.io/listen-ports': '[{"HTTP": 80}, {"HTTPS": 443}]',
+              'alb.ingress.kubernetes.io/actions.ssl-redirect': '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}',
+              'alb.ingress.kubernetes.io/healthcheck-path': '/health',
+              'alb.ingress.kubernetes.io/success-codes': '200',
+              'alb.ingress.kubernetes.io/healthy-threshold-count': '2',
+              'alb.ingress.kubernetes.io/unhealthy-threshold-count': '2',
+              'alb.ingress.kubernetes.io/group.name': props.tenantId,
+              'alb.ingress.kubernetes.io/tags': `tenantId=${props.tenantId},service=${serviceName}`,
+            },
+          },
+          spec: {
+            rules: [
+              {
+                host: props.customDomain ? `${props.tenantId}.${props.customDomain}` : undefined,
+                http: {
+                  paths: [
+                    {
+                      path: `/${serviceName}/?(.*)`,
+                      pathType: 'Prefix',
+                      backend: {
+                        service: {
+                          name: `${props.tenantId}-${serviceName}`,
+                          port: {
+                            number: 80,
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      });
+    };
+
+    // Create ALB Ingress for app service
+    const appIngress = createAlbIngress('app', props.tenantId);
+    appIngress.node.addDependency(props.appNamespace);
+
+    // Create ALB Ingress for helm service
+    const helmIngress = createAlbIngress('helm', props.tenantId);
+    helmIngress.node.addDependency(props.helmNamespace);
+
+    // ... rest of the tenant onboarding stack code ...
+  }
+}
+
+// bin/app.ts
+
+// ... existing imports and code ...
+
+for (const [key, config] of Object.entries(clusterConfigs)) {
+  // Create cluster stack
+  clusters[key] = new EKSClusterStack(app, config.name, {
+    env,
+    clusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    tenantOnboardingProjectName: tenantOnboardingProjectName,
+    tenantDeletionProjectName: tenantDeletionProjectName,
+    sharedServiceAccountName: sharedServiceAccountName,
+    kubecostToken: kubecostToken,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+  });
+
+  // Create corresponding API stack
+  apiStacks[key] = new ApiStack(app, apiConfigs[key].name, {
+    env,
+    eksClusterName: config.name,
+    ingressControllerName: ingressControllerName,
+    albDomain: clusters[key].albDomain, // Changed from nlbDomain
+    vpc: clusters[key].vpc,
+    customDomain: customDomain,
+    hostedZoneId: hostedZoneId,
+    description: apiConfigs[key].description,
+  });
+
+  // ... rest of the code ...
+}
+
+// lib/eks-cluster-stack.ts
+
+export interface EKSClusterStackProps extends cdk.StackProps {
+  clusterName: string;
+  ingressControllerName: string;
+  tenantOnboardingProjectName: string;
+  tenantDeletionProjectName: string;
+  sharedServiceAccountName: string;
+  kubecostToken: string;
+  customDomain?: string;
+  hostedZoneId?: string;
+}
+
+// lib/api-stack.ts
+
+export interface ApiStackProps extends cdk.StackProps {
+  eksClusterName: string;
+  ingressControllerName: string;
+  albDomain: string; // Changed from nlbDomain
+  vpc: ec2.IVpc;
+  customDomain?: string;
+  hostedZoneId?: string;
+  description: string;
+}
