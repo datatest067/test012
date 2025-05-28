@@ -47,22 +47,23 @@ export class EKSClusterStack extends cdk.Stack {
     });
 
     // Create ALB Controller IAM Role with CfnJson for conditions
+    const conditions = new cdk.CfnJson(this, 'AlbControllerRoleCondition', {
+      value: {
+        [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:aud`]: 'sts.amazonaws.com',
+        [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: 'system:serviceaccount:kube-system:aws-load-balancer-controller'
+      }
+    });
+
     const albControllerRole = new iam.Role(this, 'AlbControllerRole', {
       assumedBy: new iam.FederatedPrincipal(
         this.cluster.openIdConnectProvider.openIdConnectProviderArn,
         {
-          StringEquals: {
-            [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:aud`]: 'sts.amazonaws.com',
-            [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: new cdk.CfnJson(this, 'AlbControllerRoleCondition', {
-              value: {
-                [`${this.cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: 'system:serviceaccount:kube-system:aws-load-balancer-controller'
-              }
-            })
-          }
+          StringEquals: conditions
         },
         'sts:AssumeRoleWithWebIdentity'
       )
     });
+
 
     // Add ALB Controller policies
     albControllerRole.addManagedPolicy(
