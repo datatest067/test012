@@ -199,3 +199,106 @@ export class EKSClusterStack extends cdk.Stack {
     cdk.Tags.of(this).add('environment', 'production');
   }
 }
+
+##### new update
+
+// lib/eks-cluster-stack.ts
+
+export class EksClusterStack extends cdk.Stack {
+  public readonly cluster: eks.Cluster;
+  public readonly vpc: ec2.Vpc;
+  public readonly albDomain: string; // Add this property
+
+  constructor(scope: Construct, id: string, props: EksClusterStackProps) {
+    super(scope, id, props);
+
+    // ... existing code ...
+
+    // Create ALB Ingress Controller with updated version
+    const albChart = this.cluster.addHelmChart('AlbIngressController', {
+      chart: 'aws-load-balancer-controller',
+      repository: 'https://aws.github.io/eks-charts',
+      release: props.ingressControllerName,
+      values: {
+        clusterName: props.clusterName,
+        serviceAccount: {
+          create: true,
+          name: 'aws-load-balancer-controller',
+          annotations: {
+            'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+          },
+        },
+        region: this.region,
+        vpcId: this.vpc.vpcId,
+        image: {
+          repository: '602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-load-balancer-controller',
+          tag: 'v2.7.1',
+        },
+        enableCertManager: true,
+        enableShield: true,
+        enableWaf: true,
+        enableWafv2: true,
+        defaultTags: {
+          'cluster-name': props.clusterName,
+          'environment': 'production',
+        },
+      },
+    });
+
+    // Create a custom resource to get the ALB domain
+    const albDomainResource = new cdk.CustomResource(this, 'AlbDomainResource', {
+      serviceToken: new cdk.CustomResource(this, 'AlbDomainLambda', {
+        runtime: lambda.Runtime.NODEJS_18_X,
+        handler: 'index.handler',
+        code: lambda.Code.fromInline(`
+          exports.handler = async (event) => {
+            if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+              // Wait for ALB to be ready
+              await new Promise(resolve => setTimeout(resolve, 300000)); // 5 minutes
+              return {
+                PhysicalResourceId: 'alb-domain',
+                Data: {
+                  Domain: '${props.clusterName}.${this.region}.elb.amazonaws.com'
+                }
+              };
+            }
+            return {
+              PhysicalResourceId: event.PhysicalResourceId
+            };
+          }
+        `),
+        timeout: cdk.Duration.minutes(10),
+      }).serviceToken,
+      properties: {
+        ServiceToken: new cdk.CustomResource(this, 'AlbDomainLambda', {
+          runtime: lambda.Runtime.NODEJS_18_X,
+          handler: 'index.handler',
+          code: lambda.Code.fromInline(`
+            exports.handler = async (event) => {
+              if (event.RequestType === 'Create' || event.RequestType === 'Update') {
+                // Wait for ALB to be ready
+                await new Promise(resolve => setTimeout(resolve, 300000)); // 5 minutes
+                return {
+                  PhysicalResourceId: 'alb-domain',
+                  Data: {
+                    Domain: '${props.clusterName}.${this.region}.elb.amazonaws.com'
+                  }
+                };
+              }
+              return {
+                PhysicalResourceId: event.PhysicalResourceId
+              };
+            }
+          `),
+          timeout: cdk.Duration.minutes(10),
+        }).serviceToken,
+      },
+    });
+
+    // Set the ALB domain
+    this.albDomain = albDomainResource.getAtt('Domain').toString();
+
+    // Add dependency to ensure ALB is created first
+    albDomainResource.node.addDependency(albChart);
+  }
+}
