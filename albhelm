@@ -108,3 +108,119 @@ export class EksClusterStack extends cdk.Stack {
     this.albDomain = `${props.clusterName}-alb.${this.region}.elb.amazonaws.com`;
   }
 }
+
+###updated
+// lib/eks-cluster-stack.ts
+
+import * as cdk from 'aws-cdk-lib';
+import * as eks from 'aws-cdk-lib/aws-eks';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
+
+export class EksClusterStack extends cdk.Stack {
+  // ... existing code ...
+
+  constructor(scope: Construct, id: string, props: EksClusterStackProps) {
+    super(scope, id, props);
+
+    // ... existing code ...
+
+    // Create ALB Ingress Controller with corrected configuration
+    const albChart = cluster.addHelmChart('AlbIngressController', {
+      chart: 'aws-load-balancer-controller',
+      repository: 'https://aws.github.io/eks-charts',
+      release: props.ingressControllerName,
+      values: {
+        clusterName: props.clusterName,
+        serviceAccount: {
+          create: true,
+          name: 'aws-load-balancer-controller',
+          annotations: {
+            'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+          },
+        },
+        region: this.region,
+        vpcId: this.vpc.vpcId,
+        image: {
+          repository: '602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-load-balancer-controller',
+          tag: 'v2.5.4',
+        },
+        // Add webhook configuration
+        enableWebhook: true,
+        webhook: {
+          port: 9443,
+          create: true,
+          timeoutSeconds: 30,
+        },
+        // Add resource limits and requests
+        resources: {
+          requests: {
+            cpu: '0.25',
+            memory: '0.5Gi',
+          },
+          limits: {
+            cpu: '0.5',
+            memory: '1Gi',
+          },
+        },
+        // Remove incorrect securityContext
+        // Add correct pod security context
+        podSecurityContext: {
+          fsGroup: 65534,
+        },
+        // Add container security context
+        securityContext: {
+          runAsNonRoot: true,
+          runAsUser: 65534,
+          runAsGroup: 65534,
+        },
+        // Add pod annotations
+        podAnnotations: {
+          'prometheus.io/scrape': 'true',
+          'prometheus.io/port': '8080',
+        },
+        // Add node selector
+        nodeSelector: {
+          'kubernetes.io/os': 'linux',
+        },
+        // Add tolerations
+        tolerations: [
+          {
+            key: 'node-role.kubernetes.io/master',
+            effect: 'NoSchedule',
+          },
+        ],
+      },
+      namespace: 'kube-system',
+      timeout: cdk.Duration.minutes(5),
+      wait: true,
+    });
+
+    // Create IngressClass for ALB
+    const ingressClass = new eks.KubernetesManifest(this, 'AlbIngressClass', {
+      cluster,
+      manifest: [
+        {
+          apiVersion: 'networking.k8s.io/v1',
+          kind: 'IngressClass',
+          metadata: {
+            name: 'alb',
+            annotations: {
+              'ingressclass.kubernetes.io/is-default-class': 'true'
+            }
+          },
+          spec: {
+            controller: 'ingress.k8s.aws/alb'
+          }
+        }
+      ]
+    });
+
+    // Add dependency to ensure ALB Controller is deployed first
+    ingressClass.node.addDependency(albChart);
+
+    // Export ALB domain
+    this.albDomain = `${props.clusterName}-alb.${this.region}.elb.amazonaws.com`;
+  }
+}
