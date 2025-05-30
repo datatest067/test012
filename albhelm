@@ -1,0 +1,110 @@
+// lib/eks-cluster-stack.ts
+
+import * as cdk from 'aws-cdk-lib';
+import * as eks from 'aws-cdk-lib/aws-eks';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
+
+export class EksClusterStack extends cdk.Stack {
+  // ... existing code ...
+
+  constructor(scope: Construct, id: string, props: EksClusterStackProps) {
+    super(scope, id, props);
+
+    // ... existing code ...
+
+    // Create ALB Controller IAM Role first
+    const albControllerRole = new iam.Role(this, 'AlbControllerRole', {
+      assumedBy: new iam.FederatedPrincipal(
+        cluster.openIdConnectProvider.openIdConnectProviderArn,
+        {
+          StringEquals: {
+            [`${cluster.openIdConnectProvider.openIdConnectProviderIssuer}:aud`]: 'sts.amazonaws.com',
+            [`${cluster.openIdConnectProvider.openIdConnectProviderIssuer}:sub`]: 'system:serviceaccount:kube-system:aws-load-balancer-controller',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+    });
+
+    // Add ALB Controller policies
+    albControllerRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName('AWSLoadBalancerControllerIAMPolicy')
+    );
+
+    // Create ALB Ingress Controller with updated configuration
+    const albChart = cluster.addHelmChart('AlbIngressController', {
+      chart: 'aws-load-balancer-controller',
+      repository: 'https://aws.github.io/eks-charts',
+      release: props.ingressControllerName,
+      values: {
+        clusterName: props.clusterName,
+        serviceAccount: {
+          create: true,
+          name: 'aws-load-balancer-controller',
+          annotations: {
+            'eks.amazonaws.com/role-arn': albControllerRole.roleArn,
+          },
+        },
+        region: this.region,
+        vpcId: this.vpc.vpcId,
+        image: {
+          repository: '602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-load-balancer-controller',
+          tag: 'v2.5.4',
+        },
+        // Add webhook configuration
+        enableWebhook: true,
+        webhook: {
+          port: 9443,
+          create: true,
+          timeoutSeconds: 30,
+        },
+        // Add additional configuration for better stability
+        resources: {
+          requests: {
+            cpu: '0.25',
+            memory: '0.5Gi',
+          },
+          limits: {
+            cpu: '0.5',
+            memory: '1Gi',
+          },
+        },
+        // Add security context
+        securityContext: {
+          fsGroup: 65534,
+        },
+        // Add pod annotations
+        podAnnotations: {
+          'prometheus.io/scrape': 'true',
+          'prometheus.io/port': '8080',
+        },
+        // Add pod security context
+        podSecurityContext: {
+          fsGroup: 65534,
+        },
+        // Add node selector if needed
+        nodeSelector: {
+          'kubernetes.io/os': 'linux',
+        },
+        // Add tolerations if needed
+        tolerations: [
+          {
+            key: 'node-role.kubernetes.io/master',
+            effect: 'NoSchedule',
+          },
+        ],
+      },
+      // Add namespace
+      namespace: 'kube-system',
+      // Add timeout
+      timeout: cdk.Duration.minutes(5),
+      // Add wait
+      wait: true,
+    });
+
+    // Export ALB domain
+    this.albDomain = `${props.clusterName}-alb.${this.region}.elb.amazonaws.com`;
+  }
+}
