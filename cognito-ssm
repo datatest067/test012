@@ -1,0 +1,239 @@
+import * as cdk from 'aws-cdk-lib';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { Construct } from 'constructs';
+
+export class CognitoStack extends cdk.Stack {
+  public readonly userPool: cognito.UserPool;
+  public readonly adminUserPoolClient: cognito.UserPoolClient;
+  public readonly apiAppUserPoolClient: cognito.UserPoolClient;
+  public readonly privateApiAppUserPoolClient: cognito.UserPoolClient;
+  public readonly userPoolDomain: cognito.UserPoolDomain;
+
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create Cognito User Pool
+    this.userPool = new cognito.UserPool(this, 'UserPool', {
+      userPoolName: 'saas-user-pool',
+      selfSignUpEnabled: false,
+      signInAliases: {
+        email: true,
+      },
+      standardAttributes: {
+        email: {
+          required: true,
+          mutable: true,
+        },
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+    });
+
+    // Create User Pool Resource Server
+    const resourceServer = new cognito.UserPoolResourceServer(this, 'ResourceServer', {
+      userPool: this.userPool,
+      identifier: 'api',
+      scopes: [
+        {
+          scopeName: 'read',
+          scopeDescription: 'Read access',
+        },
+        {
+          scopeName: 'write',
+          scopeDescription: 'Write access',
+        },
+      ],
+    });
+
+    // Create Admin User Pool Client
+    this.adminUserPoolClient = new cognito.UserPoolClient(this, 'AdminUserPoolClient', {
+      userPool: this.userPool,
+      userPoolClientName: 'admin-client',
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+        },
+        callbackUrls: [
+          'http://localhost:3000',
+          'http://localhost:4200',
+        ],
+        logoutUrls: [
+          'http://localhost:3000',
+          'http://localhost:4200',
+        ],
+      },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+    });
+
+    // Create API App User Pool Client
+    this.apiAppUserPoolClient = new cognito.UserPoolClient(this, 'ApiAppUserPoolClient', {
+      userPool: this.userPool,
+      userPoolClientName: 'api-app-client',
+      oAuth: {
+        flows: {
+          clientCredentials: true,
+        },
+        scopes: [
+          cognito.OAuthScope.resourceServer(resourceServer, 'read'),
+          cognito.OAuthScope.resourceServer(resourceServer, 'write'),
+        ],
+      },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+    });
+
+    // Create Private API App User Pool Client
+    this.privateApiAppUserPoolClient = new cognito.UserPoolClient(this, 'PrivateApiAppUserPoolClient', {
+      userPool: this.userPool,
+      userPoolClientName: 'private-api-app-client',
+      oAuth: {
+        flows: {
+          clientCredentials: true,
+        },
+        scopes: [
+          cognito.OAuthScope.resourceServer(resourceServer, 'read'),
+          cognito.OAuthScope.resourceServer(resourceServer, 'write'),
+        ],
+      },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+    });
+
+    // Create User Pool Domain
+    this.userPoolDomain = this.userPool.addDomain('UserPoolDomain', {
+      cognitoDomain: {
+        domainPrefix: 'saas-app-domain',
+      },
+    });
+
+    // Create User Pool Groups
+    const adminGroup = new cognito.CfnUserPoolGroup(this, 'AdminUserPoolGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'Admin',
+      description: 'Administrator group',
+    });
+
+    const validatorGroup = new cognito.CfnUserPoolGroup(this, 'ValidatorUserPoolGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'Validator',
+      description: 'Validator group',
+    });
+
+    const builderGroup = new cognito.CfnUserPoolGroup(this, 'BuilderUserPoolGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'Builder',
+      description: 'Builder group',
+    });
+
+    const managerGroup = new cognito.CfnUserPoolGroup(this, 'ManagerUserPoolGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'Manager',
+      description: 'Manager group',
+    });
+
+    // Create Admin User
+    const adminUser = new cognito.CfnUserPoolUser(this, 'AdminUser', {
+      userPoolId: this.userPool.userPoolId,
+      username: 'admin',
+      userAttributes: [
+        {
+          name: 'email',
+          value: 'admin@example.com',
+        },
+        {
+          name: 'email_verified',
+          value: 'true',
+        },
+      ],
+    });
+
+    // Attach Admin User to Admin Group
+    new cognito.CfnUserPoolUserToGroupAttachment(this, 'AdminUserGroupAttachment', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'Admin',
+      username: 'admin',
+    });
+
+    // Create Cognito UI Log Group
+    const cognitoUiLogGroup = new logs.LogGroup(this, 'CognitoUiLogGroup', {
+      logGroupName: '/aws/cognito/ui',
+      retention: logs.RetentionDays.ONE_MONTH,
+    });
+
+    // Create Customize Cognito UI Execution Role
+    const customizeCognitoUiExecRole = new iam.Role(this, 'CustomizeCognitoUiExecRole', {
+      assumedBy: new iam.ServicePrincipal('cognito-idp.amazonaws.com'),
+      description: 'Role for customizing Cognito UI',
+    });
+
+    customizeCognitoUiExecRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'logs:CreateLogGroup',
+          'logs:CreateLogStream',
+          'logs:PutLogEvents',
+        ],
+        resources: [cognitoUiLogGroup.logGroupArn],
+      })
+    );
+
+    // Store parameters in SSM
+    new ssm.StringParameter(this, 'AdminUserPoolClientId', {
+      parameterName: '/cognito/admin-client-id',
+      stringValue: this.adminUserPoolClient.userPoolClientId,
+    });
+
+    new ssm.StringParameter(this, 'UserPoolId', {
+      parameterName: '/cognito/user-pool-id',
+      stringValue: this.userPool.userPoolId,
+    });
+
+    new ssm.StringParameter(this, 'CognitoDomainName', {
+      parameterName: '/cognito/domain-name',
+      stringValue: this.userPoolDomain.domainName,
+    });
+
+    // Output values
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: this.userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+    });
+
+    new cdk.CfnOutput(this, 'AdminClientId', {
+      value: this.adminUserPoolClient.userPoolClientId,
+      description: 'Admin User Pool Client ID',
+    });
+
+    new cdk.CfnOutput(this, 'CognitoDomain', {
+      value: this.userPoolDomain.domainName,
+      description: 'Cognito Domain Name',
+    });
+  }
+}
+
+//app.ts
+import * as cdk from 'aws-cdk-lib';
+import { CognitoStack } from './constructs/cognito-stack';
+
+const app = new cdk.App();
+
+new CognitoStack(app, 'CognitoStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+});
