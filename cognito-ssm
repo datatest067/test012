@@ -54,27 +54,58 @@ export class CognitoStack extends cdk.Stack {
       ],
     });
 
-    // Create Admin User Pool Client
-    this.adminUserPoolClient = new cognito.UserPoolClient(this, 'AdminUserPoolClient', {
-      userPool: this.userPool,
-      userPoolClientName: 'admin-client',
-      oAuth: {
-        flows: {
-          authorizationCodeGrant: true,
-        },
-        callbackUrls: [
-          'http://localhost:3000',
-          'http://localhost:4200',
-        ],
-        logoutUrls: [
-          'http://localhost:3000',
-          'http://localhost:4200',
-        ],
-      },
-      supportedIdentityProviders: [
-        cognito.UserPoolClientIdentityProvider.COGNITO,
-      ],
-    });
+// ... existing code ...
+
+this.adminUserPoolClient = new cognito.UserPoolClient(this, 'AdminUserPoolClient', {
+  userPool: this.userPool,
+  userPoolClientName: 'admin-client',
+  generateSecret: true, // Generate a client secret
+  oAuth: {
+    flows: {
+      authorizationCodeGrant: true,
+      implicitCodeGrant: true, // Enable implicit grant flow
+    },
+    callbackUrls: [
+      'http://localhost:3000',
+      'http://localhost:4200',
+    ],
+    logoutUrls: [
+      'http://localhost:3000',
+      'http://localhost:4200',
+    ],
+    scopes: [
+      cognito.OAuthScope.EMAIL,
+      cognito.OAuthScope.OPENID,
+      cognito.OAuthScope.PROFILE,
+      cognito.OAuthScope.resourceServer(resourceServer, 'read'),
+      cognito.OAuthScope.resourceServer(resourceServer, 'write'),
+    ],
+  },
+  supportedIdentityProviders: [
+    cognito.UserPoolClientIdentityProvider.COGNITO,
+  ],
+  explicitAuthFlows: [
+    cognito.AuthFlow.USER_PASSWORD_AUTH,
+    cognito.AuthFlow.ADMIN_USER_PASSWORD_AUTH,
+    cognito.AuthFlow.USER_SRP_AUTH,
+    cognito.AuthFlow.CUSTOM_AUTH,
+    cognito.AuthFlow.ADMIN_NO_SRP_AUTH,
+  ],
+  allowedOAuthFlows: [
+    cognito.OAuthFlow.IMPLICIT_CODE_GRANT,
+    cognito.OAuthFlow.AUTHORIZATION_CODE_GRANT,
+  ],
+  allowedOAuthFlowsUserPoolClient: true,
+  allowedOAuthScopes: [
+    cognito.OAuthScope.EMAIL,
+    cognito.OAuthScope.OPENID,
+    cognito.OAuthScope.PROFILE,
+    cognito.OAuthScope.resourceServer(resourceServer, 'read'),
+    cognito.OAuthScope.resourceServer(resourceServer, 'write'),
+  ],
+});
+
+// ... rest of the code ...
 
     // Create API App User Pool Client
     this.apiAppUserPoolClient = new cognito.UserPoolClient(this, 'ApiAppUserPoolClient', {
